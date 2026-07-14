@@ -26,4 +26,13 @@ public class PolarisTaskConstants {
   public static final String TASK_DATA = "data";
   public static final String TASK_TYPE = "taskType";
   public static final String STORAGE_LOCATION = "storageLocation";
+
+  /** Number of Iceberg encrypted keys copied to a cleanup task. */
+  public static final String ENCRYPTION_KEY_COUNT = "encryptionKeyCount";
+
+  /** Prefix for Iceberg encrypted key JSON values copied to a cleanup task. */
+  public static final String ENCRYPTION_KEY_PREFIX = "encryptionKey.";
+
+  /** Prefix for catalog KMS properties copied to a cleanup task. */
+  public static final String ENCRYPTION_KMS_PROPERTY_PREFIX = "encryptionKmsProperty.";
 }

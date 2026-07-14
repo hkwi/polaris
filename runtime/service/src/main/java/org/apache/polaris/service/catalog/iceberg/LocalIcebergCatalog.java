@@ -65,7 +65,12 @@ import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.encryption.EncryptingFileIO;
 import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.encryption.EncryptionUtil;
+import org.apache.iceberg.encryption.KeyManagementClient;
+import org.apache.iceberg.encryption.PlaintextEncryptionManager;
+import org.apache.iceberg.encryption.StandardEncryptionManager;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.BadRequestException;
 import org.apache.iceberg.exceptions.CommitFailedException;
@@ -136,6 +141,7 @@ import org.apache.polaris.service.catalog.SupportsNotifications;
 import org.apache.polaris.service.catalog.common.CatalogUtils;
 import org.apache.polaris.service.catalog.common.LocationUtils;
 import org.apache.polaris.service.catalog.io.FileIOFactory;
+import org.apache.polaris.service.catalog.io.PolarisEncryptionUtil;
 import org.apache.polaris.service.catalog.io.StorageAccessConfigProvider;
 import org.apache.polaris.service.catalog.validation.IcebergPropertiesValidation;
 import org.apache.polaris.service.events.EventAttributeMap;
@@ -191,6 +197,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
   private FileIO catalogFileIO;
   private CloseableGroup closeableGroup;
   private Map<String, String> tableDefaultProperties;
+  private KeyManagementClient keyManagementClient;
 
   private final String catalogName;
   private final long catalogId;
@@ -321,6 +328,11 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
     this.closeableGroup = new CloseableGroup();
     closeableGroup.addCloseable(metricsReporter());
+    if (properties.containsKey(CatalogProperties.ENCRYPTION_KMS_TYPE)
+        || properties.containsKey(CatalogProperties.ENCRYPTION_KMS_IMPL)) {
+      keyManagementClient = EncryptionUtil.createKmsClient(properties);
+      closeableGroup.addCloseable(keyManagementClient);
+    }
     closeableGroup.setSuppressCloseFailure(true);
 
     tableDefaultProperties =
@@ -574,6 +586,8 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                   clone.put(CatalogProperties.FILE_IO_IMPL, ioImplClassName);
                   clone.putAll(properties);
                   clone.put(PolarisTaskConstants.STORAGE_LOCATION, lastMetadata.location());
+                  PolarisEncryptionUtil.addCleanupTaskEncryptionProperties(
+                      clone, catalogProperties, lastMetadata);
                   return clone;
                 })
             .orElse(Map.of());
@@ -1630,6 +1644,8 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
     private final boolean makeMetadataCurrentOnCommit;
 
     private FileIO tableFileIO;
+    private EncryptionManager encryptionManager;
+    private EncryptingFileIO encryptingFileIO;
 
     BasePolarisTableOperations(
         FileIO defaultFileIO,
@@ -1702,7 +1718,28 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
     @Override
     public FileIO io() {
-      return tableFileIO;
+      if (tableFileIO == null) {
+        return null;
+      }
+
+      EncryptionManager manager = encryption();
+      if (manager == PlaintextEncryptionManager.instance()) {
+        return tableFileIO;
+      }
+
+      if (encryptingFileIO == null) {
+        encryptingFileIO = EncryptingFileIO.combine(tableFileIO, manager);
+      }
+      return encryptingFileIO;
+    }
+
+    @Override
+    public EncryptionManager encryption() {
+      if (encryptionManager == null) {
+        encryptionManager =
+            PolarisEncryptionUtil.encryptionManager(currentMetadata, keyManagementClient);
+      }
+      return encryptionManager;
     }
 
     @Override
@@ -1766,7 +1803,11 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                       resolvedEntities,
                       new HashMap<>(tableDefaultProperties),
                       Set.of(PolarisStorageActions.READ, PolarisStorageActions.LIST));
-              return TableMetadataParser.read(fileIO, metadataLocation);
+              TableMetadata metadata = TableMetadataParser.read(fileIO, metadataLocation);
+              tableFileIO = fileIO;
+              encryptionManager = null;
+              encryptingFileIO = null;
+              return metadata;
             });
         if (polarisEventDispatcher.hasListeners(PolarisEventType.AFTER_REFRESH_TABLE)) {
           polarisEventDispatcher.dispatch(
@@ -1845,7 +1886,25 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                   PolarisStorageActions.WRITE,
                   PolarisStorageActions.LIST));
 
-      String newLocation = writeNewMetadataIfRequired(base == null, metadata);
+      // SnapshotProducer may already have used this manager to generate and register encryption
+      // keys while writing encrypted manifests. Recreating it here would discard those keys
+      // before they are persisted in the new table metadata. A new-table commit has no current
+      // metadata and therefore still initializes the manager from the proposed metadata.
+      if (encryptionManager == null) {
+        encryptionManager = PolarisEncryptionUtil.encryptionManager(metadata, keyManagementClient);
+      }
+      encryptingFileIO = null;
+
+      TableMetadata tableMetadata = metadata;
+      if (encryptionManager instanceof StandardEncryptionManager) {
+        TableMetadata.Builder builder = TableMetadata.buildFrom(metadata);
+        for (var entry : EncryptionUtil.encryptionKeys(encryptionManager).entrySet()) {
+          builder.addEncryptionKey(entry.getValue());
+        }
+        tableMetadata = builder.build();
+      }
+
+      String newLocation = writeNewMetadataIfRequired(base == null, tableMetadata);
       String oldLocation = base == null ? null : base.metadataFileLocation();
 
       // TODO: Consider using the entity from doRefresh() directly to do the conflict detection
@@ -1921,7 +1980,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
       // We diverge from `BaseMetastoreTableOperations` in the below code block
       if (makeMetadataCurrentOnCommit) {
         currentMetadata =
-            TableMetadata.buildFrom(metadata)
+            TableMetadata.buildFrom(tableMetadata)
                 .withMetadataLocation(newLocation)
                 .discardChanges()
                 .build();

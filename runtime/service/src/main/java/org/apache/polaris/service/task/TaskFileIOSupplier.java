@@ -35,6 +35,7 @@ import org.apache.polaris.core.persistence.ResolvedPolarisEntity;
 import org.apache.polaris.core.storage.PolarisStorageActions;
 import org.apache.polaris.core.storage.StorageAccessConfig;
 import org.apache.polaris.service.catalog.io.FileIOFactory;
+import org.apache.polaris.service.catalog.io.PolarisEncryptionUtil;
 import org.apache.polaris.service.catalog.io.StorageAccessConfigProvider;
 
 @RequestScoped
@@ -68,6 +69,7 @@ public class TaskFileIOSupplier {
         properties.getOrDefault(
             CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.io.ResolvingFileIO");
 
-    return fileIOFactory.loadFileIO(storageAccessConfig, ioImpl, properties);
+    FileIO fileIO = fileIOFactory.loadFileIO(storageAccessConfig, ioImpl, properties);
+    return PolarisEncryptionUtil.encryptTaskFileIO(fileIO, properties);
   }
 }
