@@ -1630,6 +1630,26 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
     }
   }
 
+  private record TableEncryptionConfig(String tableKeyId, int dataKeyLength) {
+    private static @Nullable TableEncryptionConfig from(TableMetadata metadata) {
+      if (metadata == null) {
+        return null;
+      }
+
+      String tableKeyId = metadata.properties().get(TableProperties.ENCRYPTION_TABLE_KEY);
+      if (tableKeyId == null) {
+        return null;
+      }
+
+      return new TableEncryptionConfig(
+          tableKeyId,
+          PropertyUtil.propertyAsInt(
+              metadata.properties(),
+              TableProperties.ENCRYPTION_DEK_LENGTH,
+              TableProperties.ENCRYPTION_DEK_LENGTH_DEFAULT));
+    }
+  }
+
   /**
    * An implementation of {@link TableOperations} that integrates with {@link LocalIcebergCatalog}.
    * Much of this code was originally copied from {@link
@@ -1645,6 +1665,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
     private FileIO tableFileIO;
     private EncryptionManager encryptionManager;
+    private TableEncryptionConfig encryptionManagerConfig;
     private EncryptingFileIO encryptingFileIO;
 
     BasePolarisTableOperations(
@@ -1681,6 +1702,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
         currentMetadata = null;
         currentMetadataLocation = null;
         version = -1;
+        resetEncryptionState();
         throw e;
       }
       return current();
@@ -1742,10 +1764,41 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
     }
 
     private EncryptionManager encryption(TableMetadata metadata) {
-      if (encryptionManager == null) {
-        encryptionManager = PolarisEncryptionUtil.encryptionManager(metadata, keyManagementClient);
+      TableEncryptionConfig requestedConfig = TableEncryptionConfig.from(metadata);
+      if (encryptionManager != null) {
+        // A successful new-table commit may leave currentMetadata null until the next refresh, but
+        // transaction cleanup still calls the public io() method. Preserve the manager that was
+        // bound to the committed metadata in that case. A non-null plaintext metadata object is a
+        // real configuration change and is rejected below.
+        if (metadata == null) {
+          return encryptionManager;
+        }
+
+        Preconditions.checkState(
+            requestedConfig != null && requestedConfig.equals(encryptionManagerConfig),
+            "Cannot reuse encryption manager for table %s: initialized with %s but metadata requires %s",
+            fullTableName,
+            encryptionManagerConfig,
+            requestedConfig == null ? "plaintext" : requestedConfig);
+        return encryptionManager;
       }
+
+      // Do not cache the plaintext singleton. In particular, io() may be called before metadata is
+      // loaded for a new table, and that must not prevent temporary operations from initializing
+      // encryption from uncommitted metadata later.
+      if (requestedConfig == null) {
+        return PlaintextEncryptionManager.instance();
+      }
+
+      encryptionManager = PolarisEncryptionUtil.encryptionManager(metadata, keyManagementClient);
+      encryptionManagerConfig = requestedConfig;
       return encryptionManager;
+    }
+
+    private void resetEncryptionState() {
+      encryptionManager = null;
+      encryptionManagerConfig = null;
+      encryptingFileIO = null;
     }
 
     @Override
@@ -1811,8 +1864,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                       Set.of(PolarisStorageActions.READ, PolarisStorageActions.LIST));
               TableMetadata metadata = TableMetadataParser.read(fileIO, metadataLocation);
               tableFileIO = fileIO;
-              encryptionManager = null;
-              encryptingFileIO = null;
+              resetEncryptionState();
               return metadata;
             });
         if (polarisEventDispatcher.hasListeners(PolarisEventType.AFTER_REFRESH_TABLE)) {
@@ -1896,9 +1948,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
       // keys while writing encrypted manifests. Recreating it here would discard those keys
       // before they are persisted in the new table metadata. A new-table commit has no current
       // metadata and therefore still initializes the manager from the proposed metadata.
-      if (encryptionManager == null) {
-        encryptionManager = PolarisEncryptionUtil.encryptionManager(metadata, keyManagementClient);
-      }
+      encryption(metadata);
       encryptingFileIO = null;
 
       TableMetadata tableMetadata = metadata;
@@ -2078,7 +2128,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
     protected String writeNewMetadata(TableMetadata metadata, int newVersion) {
       String newTableMetadataFilePath = newTableMetadataFilePath(metadata, newVersion);
-      OutputFile newMetadataLocation = io().newOutputFile(newTableMetadataFilePath);
+      OutputFile newMetadataLocation = io(metadata).newOutputFile(newTableMetadataFilePath);
 
       // write the new metadata
       // use overwrite to avoid negative caching in S3. this is safe because the metadata location

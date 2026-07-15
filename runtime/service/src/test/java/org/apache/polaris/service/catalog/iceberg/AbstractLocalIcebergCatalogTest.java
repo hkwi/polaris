@@ -2014,6 +2014,90 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
   }
 
   @Test
+  public void testPlaintextIoDoesNotPoisonTemporaryEncryptedOperations() throws IOException {
+    LocalIcebergCatalog encryptedCatalog =
+        initCatalog(
+            CATALOG_NAME,
+            Map.of(CatalogProperties.ENCRYPTION_KMS_IMPL, PolarisTestKms.class.getName()));
+    try {
+      InMemoryFileIO rawFileIO = new InMemoryFileIO();
+      LocalIcebergCatalog.BasePolarisTableOperations operations =
+          encryptedCatalog.new BasePolarisTableOperations(rawFileIO, TABLE, false);
+
+      Assertions.assertThat(operations.io()).isSameAs(rawFileIO);
+
+      TableOperations temporary =
+          operations.temp(
+              newEncryptedTableMetadata(
+                  "file:///tmp/plaintext-before-encrypted", PolarisTestKms.MASTER_KEY_NAME, 16));
+      Assertions.assertThat(temporary.io()).isInstanceOf(EncryptingFileIO.class);
+      Assertions.assertThat(((EncryptingFileIO) temporary.io()).encryptionManager())
+          .isSameAs(temporary.encryption());
+    } finally {
+      encryptedCatalog.close();
+    }
+  }
+
+  @Test
+  public void testTemporaryOperationsValidateCachedEncryptionSettings() throws IOException {
+    LocalIcebergCatalog encryptedCatalog =
+        initCatalog(
+            CATALOG_NAME,
+            Map.of(CatalogProperties.ENCRYPTION_KMS_IMPL, PolarisTestKms.class.getName()));
+    try {
+      LocalIcebergCatalog.BasePolarisTableOperations operations =
+          encryptedCatalog.new BasePolarisTableOperations(new InMemoryFileIO(), TABLE, false);
+      var encryptionManager =
+          operations
+              .temp(
+                  newEncryptedTableMetadata(
+                      "file:///tmp/encrypted-a", PolarisTestKms.MASTER_KEY_NAME, 16))
+              .encryption();
+
+      Assertions.assertThat(
+              operations
+                  .temp(
+                      newEncryptedTableMetadata(
+                          "file:///tmp/encrypted-b", PolarisTestKms.MASTER_KEY_NAME, 16))
+                  .encryption())
+          .isSameAs(encryptionManager);
+
+      Assertions.assertThatThrownBy(
+              () ->
+                  operations
+                      .temp(
+                          newEncryptedTableMetadata("file:///tmp/changed-key", "different-key", 16))
+                      .encryption())
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("Cannot reuse encryption manager")
+          .hasMessageContaining("different-key");
+
+      Assertions.assertThatThrownBy(
+              () ->
+                  operations
+                      .temp(
+                          newEncryptedTableMetadata(
+                              "file:///tmp/changed-dek", PolarisTestKms.MASTER_KEY_NAME, 32))
+                      .encryption())
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("Cannot reuse encryption manager")
+          .hasMessageContaining("dataKeyLength=32");
+
+      TableMetadata plaintextMetadata =
+          TableMetadata.newTableMetadata(
+              SCHEMA,
+              PartitionSpec.unpartitioned(),
+              "file:///tmp/plaintext",
+              Map.of(TableProperties.FORMAT_VERSION, "3"));
+      Assertions.assertThatThrownBy(() -> operations.temp(plaintextMetadata).encryption())
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("metadata requires plaintext");
+    } finally {
+      encryptedCatalog.close();
+    }
+  }
+
+  @Test
   public void testEncryptedTableLifecycleAndServerPurge() throws IOException {
     LocalIcebergCatalog encryptedCatalog =
         initCatalog(
@@ -2164,6 +2248,21 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
+  }
+
+  private static TableMetadata newEncryptedTableMetadata(
+      String location, String tableKeyId, int dataKeyLength) {
+    return TableMetadata.newTableMetadata(
+        SCHEMA,
+        PartitionSpec.unpartitioned(),
+        location,
+        Map.of(
+            TableProperties.FORMAT_VERSION,
+            "3",
+            TableProperties.ENCRYPTION_TABLE_KEY,
+            tableKeyId,
+            TableProperties.ENCRYPTION_DEK_LENGTH,
+            String.valueOf(dataKeyLength)));
   }
 
   @Test
