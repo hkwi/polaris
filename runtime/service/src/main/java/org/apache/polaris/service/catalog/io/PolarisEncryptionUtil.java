@@ -81,6 +81,13 @@ public final class PolarisEncryptionUtil {
     // A custom KeyManagementClient may use additional catalog properties. Keep them in a
     // separate task namespace so they cannot overwrite the FileIO and storage properties that
     // were already resolved for this cleanup task.
+    //
+    // Task properties start with table metadata, so first discard any values in this namespace
+    // that originated from table-controlled properties. Only catalog-controlled KMS settings may
+    // be used to initialize a server-side cleanup task.
+    taskProperties
+        .keySet()
+        .removeIf(key -> key.startsWith(PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX));
     catalogProperties.forEach(
         (key, value) ->
             taskProperties.put(PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX + key, value));

@@ -100,6 +100,9 @@ class PolarisEncryptionUtilTest {
     taskProperties.put(CatalogProperties.FILE_IO_IMPL, "restricted.FileIO");
     taskProperties.put(CatalogProperties.ENCRYPTION_KMS_IMPL, "untrusted.Kms");
     taskProperties.put("storage.region", "restricted-region");
+    taskProperties.put(
+        PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX + "table-controlled-option",
+        "untrusted-value");
 
     PolarisEncryptionUtil.addCleanupTaskEncryptionProperties(
         taskProperties,
@@ -124,7 +127,9 @@ class PolarisEncryptionUtilTest {
             PolarisTestKms.class.getName())
         .containsEntry(
             PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX + "vault-proxy.uri",
-            "http://vault-proxy");
+            "http://vault-proxy")
+        .doesNotContainKey(
+            PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX + "table-controlled-option");
 
     try (FileIO fileIO =
         PolarisEncryptionUtil.encryptTaskFileIO(new InMemoryFileIO(), taskProperties)) {

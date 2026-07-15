@@ -70,6 +70,15 @@ public class TaskFileIOSupplier {
             CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.io.ResolvingFileIO");
 
     FileIO fileIO = fileIOFactory.loadFileIO(storageAccessConfig, ioImpl, properties);
-    return PolarisEncryptionUtil.encryptTaskFileIO(fileIO, properties);
+    try {
+      return PolarisEncryptionUtil.encryptTaskFileIO(fileIO, properties);
+    } catch (RuntimeException e) {
+      try {
+        fileIO.close();
+      } catch (RuntimeException closeException) {
+        e.addSuppressed(closeException);
+      }
+      throw e;
+    }
   }
 }

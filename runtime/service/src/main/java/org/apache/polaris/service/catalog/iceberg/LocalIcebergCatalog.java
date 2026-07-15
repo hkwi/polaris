@@ -1718,10 +1718,14 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
     @Override
     public FileIO io() {
+      return io(currentMetadata);
+    }
+
+    private FileIO io(TableMetadata metadata) {
       Preconditions.checkState(
           tableFileIO != null, "FileIO has not been initialized for table %s", fullTableName);
 
-      EncryptionManager manager = encryption();
+      EncryptionManager manager = encryption(metadata);
       if (manager == PlaintextEncryptionManager.instance()) {
         return tableFileIO;
       }
@@ -1734,9 +1738,12 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
     @Override
     public EncryptionManager encryption() {
+      return encryption(currentMetadata);
+    }
+
+    private EncryptionManager encryption(TableMetadata metadata) {
       if (encryptionManager == null) {
-        encryptionManager =
-            PolarisEncryptionUtil.encryptionManager(currentMetadata, keyManagementClient);
+        encryptionManager = PolarisEncryptionUtil.encryptionManager(metadata, keyManagementClient);
       }
       return encryptionManager;
     }
@@ -2048,12 +2055,12 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
         @Override
         public FileIO io() {
-          return BasePolarisTableOperations.this.io();
+          return BasePolarisTableOperations.this.io(uncommittedMetadata);
         }
 
         @Override
         public EncryptionManager encryption() {
-          return BasePolarisTableOperations.this.encryption();
+          return BasePolarisTableOperations.this.encryption(uncommittedMetadata);
         }
 
         @Override

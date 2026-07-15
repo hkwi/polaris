@@ -87,6 +87,7 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.Transaction;
 import org.apache.iceberg.UpdateRequirement;
 import org.apache.iceberg.UpdateRequirements;
 import org.apache.iceberg.UpdateSchema;
@@ -1972,6 +1973,44 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     }
 
     Assertions.assertThat(PolarisTestKms.wasClosed()).isTrue();
+  }
+
+  @Test
+  public void testEncryptedTableCreateTransactionWritesEncryptedManifests() throws IOException {
+    LocalIcebergCatalog encryptedCatalog =
+        initCatalog(
+            CATALOG_NAME,
+            Map.of(CatalogProperties.ENCRYPTION_KMS_IMPL, PolarisTestKms.class.getName()));
+    try {
+      if (requiresNamespaceCreate()) {
+        encryptedCatalog.createNamespace(NS);
+      }
+
+      Transaction transaction =
+          encryptedCatalog
+              .buildTable(TABLE, SCHEMA)
+              .withProperty(TableProperties.FORMAT_VERSION, "3")
+              .withProperty(TableProperties.ENCRYPTION_TABLE_KEY, PolarisTestKms.MASTER_KEY_NAME)
+              .createTransaction();
+      transaction.table().newFastAppend().appendFile(FILE_A).commit();
+      transaction.commitTransaction();
+
+      BaseTable table = (BaseTable) encryptedCatalog.loadTable(TABLE);
+      FileIO tableFileIO = table.operations().io();
+      TableMetadata metadata = table.operations().current();
+      Snapshot snapshot = metadata.currentSnapshot();
+
+      Assertions.assertThat(tableFileIO).isInstanceOf(EncryptingFileIO.class);
+      Assertions.assertThat(metadata.encryptionKeys()).isNotEmpty();
+      Assertions.assertThat(snapshot).isNotNull();
+
+      List<ManifestFile> manifests = snapshot.allManifests(tableFileIO);
+      Assertions.assertThat(manifests).isNotEmpty();
+      manifests.forEach(manifest -> assertEncryptedFile(tableFileIO, manifest.path()));
+      assertEncryptedFile(tableFileIO, snapshot.manifestListLocation());
+    } finally {
+      encryptedCatalog.close();
+    }
   }
 
   @Test
