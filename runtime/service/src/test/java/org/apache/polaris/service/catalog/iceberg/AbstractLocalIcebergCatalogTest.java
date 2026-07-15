@@ -2848,6 +2848,16 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     newAdminService().deleteCatalog("updateCatalogWithReservedProperty");
   }
 
+  @Test
+  public void testTableOperationsIoFailsWhenFileIoIsNotInitialized() {
+    LocalIcebergCatalog.BasePolarisTableOperations operations =
+        catalog.new BasePolarisTableOperations(null, TABLE, false);
+
+    Assertions.assertThatThrownBy(operations::io)
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("FileIO has not been initialized");
+  }
+
   @ParameterizedTest
   @ValueSource(booleans = {false, true})
   public void testTableOperationsDoesNotRefreshAfterCommit(boolean updateMetadataOnCommit) {

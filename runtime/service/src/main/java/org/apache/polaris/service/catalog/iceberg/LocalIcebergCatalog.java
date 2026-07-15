@@ -1718,9 +1718,8 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
     @Override
     public FileIO io() {
-      if (tableFileIO == null) {
-        return null;
-      }
+      Preconditions.checkState(
+          tableFileIO != null, "FileIO has not been initialized for table %s", fullTableName);
 
       EncryptionManager manager = encryption();
       if (manager == PlaintextEncryptionManager.instance()) {
