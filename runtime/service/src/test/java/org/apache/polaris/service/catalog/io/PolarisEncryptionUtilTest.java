@@ -153,6 +153,24 @@ class PolarisEncryptionUtilTest {
   }
 
   @Test
+  void encryptedTaskFileIoClosesKmsClientWhenTaskKeyIsMissing() {
+    TableMetadata metadata = encryptedMetadata();
+    Map<String, String> taskProperties = new HashMap<>(metadata.properties());
+    PolarisEncryptionUtil.addCleanupTaskEncryptionProperties(
+        taskProperties,
+        Map.of(CatalogProperties.ENCRYPTION_KMS_IMPL, PolarisTestKms.class.getName()),
+        metadata);
+    taskProperties.put(PolarisTaskConstants.ENCRYPTION_KEY_COUNT, "1");
+
+    assertThatThrownBy(
+            () -> PolarisEncryptionUtil.encryptTaskFileIO(new InMemoryFileIO(), taskProperties))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Missing encrypted key 0");
+
+    assertThat(PolarisTestKms.wasClosed()).isTrue();
+  }
+
+  @Test
   void encryptedTaskFileIoRoundTripsEncryptedBytes() throws IOException {
     InMemoryFileIO rawFileIO = new InMemoryFileIO();
     TableMetadata metadata = encryptedMetadata();

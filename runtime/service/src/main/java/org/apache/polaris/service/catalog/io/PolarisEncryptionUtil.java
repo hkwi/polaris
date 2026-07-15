@@ -110,20 +110,29 @@ public final class PolarisEncryptionUtil {
     }
 
     KeyManagementClient keyManagementClient = EncryptionUtil.createKmsClient(catalogKmsProperties);
-    EncryptionManager encryptionManager =
-        new CloseableStandardEncryptionManager(
-            encryptedKeys(taskProperties),
-            taskProperties.get(TableProperties.ENCRYPTION_TABLE_KEY),
-            PropertyUtil.propertyAsInt(
-                taskProperties,
-                TableProperties.ENCRYPTION_DEK_LENGTH,
-                TableProperties.ENCRYPTION_DEK_LENGTH_DEFAULT),
-            keyManagementClient);
+    boolean kmsOwnershipTransferred = false;
+    try {
+      EncryptionManager encryptionManager =
+          new CloseableStandardEncryptionManager(
+              encryptedKeys(taskProperties),
+              taskProperties.get(TableProperties.ENCRYPTION_TABLE_KEY),
+              PropertyUtil.propertyAsInt(
+                  taskProperties,
+                  TableProperties.ENCRYPTION_DEK_LENGTH,
+                  TableProperties.ENCRYPTION_DEK_LENGTH_DEFAULT),
+              keyManagementClient);
 
-    // EncryptingFileIO closes an EncryptionManager when it is Closeable. The subclass preserves
-    // StandardEncryptionManager's type because Iceberg uses that type to decrypt manifest-list
-    // key metadata, while also closing the task-owned KMS client.
-    return EncryptingFileIO.combine(fileIO, encryptionManager);
+      // EncryptingFileIO closes an EncryptionManager when it is Closeable. The subclass preserves
+      // StandardEncryptionManager's type because Iceberg uses that type to decrypt manifest-list
+      // key metadata, while also closing the task-owned KMS client.
+      FileIO encryptingFileIO = EncryptingFileIO.combine(fileIO, encryptionManager);
+      kmsOwnershipTransferred = true;
+      return encryptingFileIO;
+    } finally {
+      if (!kmsOwnershipTransferred) {
+        keyManagementClient.close();
+      }
+    }
   }
 
   private static Map<String, String> catalogKmsProperties(Map<String, String> taskProperties) {
