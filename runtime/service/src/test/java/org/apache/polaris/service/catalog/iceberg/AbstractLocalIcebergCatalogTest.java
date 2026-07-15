@@ -2929,6 +2929,8 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     final TableIdentifier tableId = TableIdentifier.of(namespace, "conflict_table");
 
     Table table = catalog.buildTable(tableId, SCHEMA).create();
+    TableOperations operations = ((BaseTable) table).operations();
+    TableMetadata metadataBeforeCommit = operations.current();
 
     doReturn(new EntityResult(BaseResult.ReturnStatus.TARGET_ENTITY_CONCURRENTLY_MODIFIED, null))
         .when(spyMetaStore)
@@ -2940,6 +2942,8 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     Assertions.assertThatThrownBy(() -> update.commit())
         .isInstanceOf(CommitConflictException.class)
         .hasMessageContaining("conflict_table");
+
+    assertThat(operations.current()).isSameAs(metadataBeforeCommit);
   }
 
   @Test

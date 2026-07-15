@@ -2033,7 +2033,14 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
             tableIdentifier, oldLocation, newLocation, existingLocation);
       }
 
-      // We diverge from `BaseMetastoreTableOperations` in the below code block
+      if (null == existingLocation) {
+        createTableLike(tableIdentifier, entity);
+      } else {
+        updateTableLike(tableIdentifier, entity);
+      }
+
+      // We diverge from `BaseMetastoreTableOperations` in the below code block. Only expose the
+      // new metadata through this operations instance after the catalog commit has succeeded.
       if (makeMetadataCurrentOnCommit) {
         currentMetadata =
             TableMetadata.buildFrom(tableMetadata)
@@ -2041,12 +2048,6 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                 .discardChanges()
                 .build();
         currentMetadataLocation = newLocation;
-      }
-
-      if (null == existingLocation) {
-        createTableLike(tableIdentifier, entity);
-      } else {
-        updateTableLike(tableIdentifier, entity);
       }
     }
 
