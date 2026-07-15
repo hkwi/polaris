@@ -20,8 +20,6 @@ package org.apache.polaris.service.catalog.io;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.CatalogProperties;
@@ -38,6 +36,7 @@ import org.apache.iceberg.encryption.StandardEncryptionManager;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.util.PropertyUtil;
 import org.apache.polaris.core.entity.PolarisTaskConstants;
+import org.apache.polaris.core.persistence.PolarisObjectMapperUtil;
 
 /** Utilities for connecting Polaris file operations to Iceberg table encryption. */
 public final class PolarisEncryptionUtil {
@@ -73,31 +72,24 @@ public final class PolarisEncryptionUtil {
       Map<String, String> taskProperties,
       Map<String, String> catalogProperties,
       TableMetadata metadata) {
+    // Task properties start with table metadata. Always discard a table-controlled value for this
+    // reserved task field, including when the table is not encrypted.
+    taskProperties.remove(PolarisTaskConstants.ENCRYPTION_CONTEXT);
+
     if (metadata == null
         || metadata.properties().get(TableProperties.ENCRYPTION_TABLE_KEY) == null) {
       return;
     }
 
-    // A custom KeyManagementClient may use additional catalog properties. Keep them in a
-    // separate task namespace so they cannot overwrite the FileIO and storage properties that
-    // were already resolved for this cleanup task.
-    //
-    // Task properties start with table metadata, so first discard any values in this namespace
-    // that originated from table-controlled properties. Only catalog-controlled KMS settings may
-    // be used to initialize a server-side cleanup task.
-    taskProperties
-        .keySet()
-        .removeIf(key -> key.startsWith(PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX));
-    catalogProperties.forEach(
-        (key, value) ->
-            taskProperties.put(PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX + key, value));
-
-    List<EncryptedKey> keys = metadata.encryptionKeys();
-    taskProperties.put(PolarisTaskConstants.ENCRYPTION_KEY_COUNT, String.valueOf(keys.size()));
-    for (int i = 0; i < keys.size(); i++) {
-      taskProperties.put(
-          PolarisTaskConstants.ENCRYPTION_KEY_PREFIX + i, EncryptedKeyParser.toJson(keys.get(i)));
-    }
+    // Keep trusted catalog KMS settings and wrapped table keys in one task-only envelope. A custom
+    // KeyManagementClient may use additional catalog properties, but these values must not be
+    // merged into the FileIO and storage properties already resolved for the cleanup task.
+    CleanupTaskEncryptionContext context =
+        new CleanupTaskEncryptionContext(
+            Map.copyOf(catalogProperties),
+            metadata.encryptionKeys().stream().map(EncryptedKeyParser::toJson).toList());
+    taskProperties.put(
+        PolarisTaskConstants.ENCRYPTION_CONTEXT, PolarisObjectMapperUtil.serialize(context));
   }
 
   /**
@@ -109,7 +101,8 @@ public final class PolarisEncryptionUtil {
       return fileIO;
     }
 
-    Map<String, String> catalogKmsProperties = catalogKmsProperties(taskProperties);
+    CleanupTaskEncryptionContext context = cleanupTaskEncryptionContext(taskProperties);
+    Map<String, String> catalogKmsProperties = context.kmsProperties();
     if (!catalogKmsProperties.containsKey(CatalogProperties.ENCRYPTION_KMS_TYPE)
         && !catalogKmsProperties.containsKey(CatalogProperties.ENCRYPTION_KMS_IMPL)) {
       throw new IllegalArgumentException(
@@ -121,7 +114,7 @@ public final class PolarisEncryptionUtil {
     try {
       EncryptionManager encryptionManager =
           new CloseableStandardEncryptionManager(
-              encryptedKeys(taskProperties),
+              encryptedKeys(context),
               taskProperties.get(TableProperties.ENCRYPTION_TABLE_KEY),
               PropertyUtil.propertyAsInt(
                   taskProperties,
@@ -142,32 +135,25 @@ public final class PolarisEncryptionUtil {
     }
   }
 
-  private static Map<String, String> catalogKmsProperties(Map<String, String> taskProperties) {
-    Map<String, String> catalogKmsProperties = new HashMap<>();
-    taskProperties.forEach(
-        (key, value) -> {
-          if (key.startsWith(PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX)) {
-            catalogKmsProperties.put(
-                key.substring(PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX.length()), value);
-          }
-        });
-    return catalogKmsProperties;
+  private static CleanupTaskEncryptionContext cleanupTaskEncryptionContext(
+      Map<String, String> taskProperties) {
+    String contextJson = taskProperties.get(PolarisTaskConstants.ENCRYPTION_CONTEXT);
+    if (contextJson == null) {
+      throw new IllegalArgumentException("Missing encryption context in cleanup task properties");
+    }
+    return PolarisObjectMapperUtil.deserialize(contextJson, CleanupTaskEncryptionContext.class);
   }
 
-  private static List<EncryptedKey> encryptedKeys(Map<String, String> taskProperties) {
-    int keyCount =
-        Integer.parseInt(
-            taskProperties.getOrDefault(PolarisTaskConstants.ENCRYPTION_KEY_COUNT, "0"));
-    List<EncryptedKey> keys = new ArrayList<>(keyCount);
-    for (int i = 0; i < keyCount; i++) {
-      String keyJson = taskProperties.get(PolarisTaskConstants.ENCRYPTION_KEY_PREFIX + i);
-      if (keyJson == null) {
-        throw new IllegalArgumentException(
-            "Missing encrypted key " + i + " in cleanup task properties");
-      }
-      keys.add(EncryptedKeyParser.fromJson(keyJson));
+  private static List<EncryptedKey> encryptedKeys(CleanupTaskEncryptionContext context) {
+    return context.encryptedKeys().stream().map(EncryptedKeyParser::fromJson).toList();
+  }
+
+  record CleanupTaskEncryptionContext(
+      Map<String, String> kmsProperties, List<String> encryptedKeys) {
+    CleanupTaskEncryptionContext {
+      kmsProperties = Map.copyOf(kmsProperties);
+      encryptedKeys = List.copyOf(encryptedKeys);
     }
-    return keys;
   }
 
   /** Makes the task-owned KMS client closeable without hiding Iceberg's standard manager type. */

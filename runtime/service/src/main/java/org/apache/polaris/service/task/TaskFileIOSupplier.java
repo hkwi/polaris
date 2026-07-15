@@ -51,10 +51,11 @@ public class TaskFileIOSupplier {
   }
 
   public FileIO apply(TaskEntity task, TableIdentifier identifier) {
-    Map<String, String> internalProperties = task.getInternalPropertiesAsMap();
-    Map<String, String> properties = new HashMap<>(internalProperties);
+    Map<String, String> taskProperties = task.getInternalPropertiesAsMap();
+    Map<String, String> fileIOProperties = new HashMap<>(taskProperties);
+    fileIOProperties.remove(PolarisTaskConstants.ENCRYPTION_CONTEXT);
 
-    String location = properties.get(PolarisTaskConstants.STORAGE_LOCATION);
+    String location = fileIOProperties.get(PolarisTaskConstants.STORAGE_LOCATION);
     Set<String> locations = Set.of(location);
     Set<PolarisStorageActions> storageActions = Set.of(PolarisStorageActions.ALL);
     ResolvedPolarisEntity resolvedTaskEntity =
@@ -66,12 +67,12 @@ public class TaskFileIOSupplier {
             identifier, locations, storageActions, Optional.empty(), resolvedPath);
 
     String ioImpl =
-        properties.getOrDefault(
+        fileIOProperties.getOrDefault(
             CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.io.ResolvingFileIO");
 
-    FileIO fileIO = fileIOFactory.loadFileIO(storageAccessConfig, ioImpl, properties);
+    FileIO fileIO = fileIOFactory.loadFileIO(storageAccessConfig, ioImpl, fileIOProperties);
     try {
-      return PolarisEncryptionUtil.encryptTaskFileIO(fileIO, properties);
+      return PolarisEncryptionUtil.encryptTaskFileIO(fileIO, taskProperties);
     } catch (RuntimeException e) {
       try {
         fileIO.close();

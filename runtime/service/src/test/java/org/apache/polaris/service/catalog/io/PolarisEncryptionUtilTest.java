@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.Schema;
@@ -45,6 +46,7 @@ import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SeekableInputStream;
 import org.apache.iceberg.types.Types;
 import org.apache.polaris.core.entity.PolarisTaskConstants;
+import org.apache.polaris.core.persistence.PolarisObjectMapperUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -84,13 +86,12 @@ class PolarisEncryptionUtilTest {
         Map.of(CatalogProperties.ENCRYPTION_KMS_IMPL, PolarisTestKms.class.getName()),
         metadata);
 
-    assertThat(taskProperties)
-        .containsEntry(
-            PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX
-                + CatalogProperties.ENCRYPTION_KMS_IMPL,
-            PolarisTestKms.class.getName())
-        .containsEntry(PolarisTaskConstants.ENCRYPTION_KEY_COUNT, "1")
-        .containsKey(PolarisTaskConstants.ENCRYPTION_KEY_PREFIX + "0");
+    assertThat(taskProperties).containsKey(PolarisTaskConstants.ENCRYPTION_CONTEXT);
+    PolarisEncryptionUtil.CleanupTaskEncryptionContext context = encryptionContext(taskProperties);
+    assertThat(context.kmsProperties())
+        .containsExactlyEntriesOf(
+            Map.of(CatalogProperties.ENCRYPTION_KMS_IMPL, PolarisTestKms.class.getName()));
+    assertThat(context.encryptedKeys()).hasSize(1);
   }
 
   @Test
@@ -100,9 +101,7 @@ class PolarisEncryptionUtilTest {
     taskProperties.put(CatalogProperties.FILE_IO_IMPL, "restricted.FileIO");
     taskProperties.put(CatalogProperties.ENCRYPTION_KMS_IMPL, "untrusted.Kms");
     taskProperties.put("storage.region", "restricted-region");
-    taskProperties.put(
-        PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX + "table-controlled-option",
-        "untrusted-value");
+    taskProperties.put(PolarisTaskConstants.ENCRYPTION_CONTEXT, "untrusted-value");
 
     PolarisEncryptionUtil.addCleanupTaskEncryptionProperties(
         taskProperties,
@@ -120,16 +119,14 @@ class PolarisEncryptionUtilTest {
     assertThat(taskProperties)
         .containsEntry(CatalogProperties.FILE_IO_IMPL, "restricted.FileIO")
         .containsEntry(CatalogProperties.ENCRYPTION_KMS_IMPL, "untrusted.Kms")
-        .containsEntry("storage.region", "restricted-region")
-        .containsEntry(
-            PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX
-                + CatalogProperties.ENCRYPTION_KMS_IMPL,
-            PolarisTestKms.class.getName())
-        .containsEntry(
-            PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX + "vault-proxy.uri",
-            "http://vault-proxy")
-        .doesNotContainKey(
-            PolarisTaskConstants.ENCRYPTION_KMS_PROPERTY_PREFIX + "table-controlled-option");
+        .containsEntry("storage.region", "restricted-region");
+    PolarisEncryptionUtil.CleanupTaskEncryptionContext context = encryptionContext(taskProperties);
+    assertThat(context.kmsProperties())
+        .containsEntry(CatalogProperties.FILE_IO_IMPL, "catalog.FileIO")
+        .containsEntry(CatalogProperties.ENCRYPTION_KMS_IMPL, PolarisTestKms.class.getName())
+        .containsEntry("storage.region", "catalog-region")
+        .containsEntry("vault-proxy.uri", "http://vault-proxy")
+        .doesNotContainKey("table-controlled-option");
 
     try (FileIO fileIO =
         PolarisEncryptionUtil.encryptTaskFileIO(new InMemoryFileIO(), taskProperties)) {
@@ -158,19 +155,23 @@ class PolarisEncryptionUtilTest {
   }
 
   @Test
-  void encryptedTaskFileIoClosesKmsClientWhenTaskKeyIsMissing() {
+  void encryptedTaskFileIoClosesKmsClientWhenTaskKeyIsInvalid() {
     TableMetadata metadata = encryptedMetadata();
     Map<String, String> taskProperties = new HashMap<>(metadata.properties());
     PolarisEncryptionUtil.addCleanupTaskEncryptionProperties(
         taskProperties,
         Map.of(CatalogProperties.ENCRYPTION_KMS_IMPL, PolarisTestKms.class.getName()),
         metadata);
-    taskProperties.put(PolarisTaskConstants.ENCRYPTION_KEY_COUNT, "1");
+    PolarisEncryptionUtil.CleanupTaskEncryptionContext context = encryptionContext(taskProperties);
+    taskProperties.put(
+        PolarisTaskConstants.ENCRYPTION_CONTEXT,
+        PolarisObjectMapperUtil.serialize(
+            new PolarisEncryptionUtil.CleanupTaskEncryptionContext(
+                context.kmsProperties(), List.of("not-an-encrypted-key"))));
 
     assertThatThrownBy(
             () -> PolarisEncryptionUtil.encryptTaskFileIO(new InMemoryFileIO(), taskProperties))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Missing encrypted key 0");
+        .isInstanceOf(RuntimeException.class);
 
     assertThat(PolarisTestKms.wasClosed()).isTrue();
   }
@@ -228,6 +229,13 @@ class PolarisEncryptionUtilTest {
         org.apache.iceberg.PartitionSpec.unpartitioned(),
         "file:///tmp/plain-table",
         Map.of());
+  }
+
+  private static PolarisEncryptionUtil.CleanupTaskEncryptionContext encryptionContext(
+      Map<String, String> taskProperties) {
+    return PolarisObjectMapperUtil.deserialize(
+        taskProperties.get(PolarisTaskConstants.ENCRYPTION_CONTEXT),
+        PolarisEncryptionUtil.CleanupTaskEncryptionContext.class);
   }
 
   private static TableMetadata encryptedMetadata() {

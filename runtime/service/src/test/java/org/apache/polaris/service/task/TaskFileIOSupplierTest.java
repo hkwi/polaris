@@ -27,6 +27,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -65,9 +66,42 @@ class TaskFileIOSupplierTest {
 
     assertThatThrownBy(() -> supplier.apply(task, TableIdentifier.of(Namespace.of("ns"), "table")))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Cannot purge an encrypted table")
+        .hasMessageContaining("Missing encryption context")
         .satisfies(failure -> assertThat(failure.getSuppressed()).containsExactly(closeFailure));
 
     verify(fileIO).close();
+  }
+
+  @Test
+  void doesNotExposeEncryptionContextToFileIo() {
+    FileIO fileIO = mock(FileIO.class);
+    StorageAccessConfigProvider storageAccessConfigProvider =
+        mock(StorageAccessConfigProvider.class);
+    when(storageAccessConfigProvider.getStorageAccessConfig(any(), any(), any(), any(), any()))
+        .thenReturn(StorageAccessConfig.builder().build());
+    AtomicReference<Map<String, String>> loadedProperties = new AtomicReference<>();
+    FileIOFactory fileIOFactory =
+        (accessConfig, ioImplClassName, properties) -> {
+          loadedProperties.set(properties);
+          return fileIO;
+        };
+    TaskFileIOSupplier supplier =
+        new TaskFileIOSupplier(fileIOFactory, storageAccessConfigProvider);
+    TaskEntity task =
+        new TaskEntity.Builder()
+            .setName("cleanup")
+            .setInternalProperties(
+                Map.of(
+                    PolarisTaskConstants.STORAGE_LOCATION,
+                    "file:///tmp/cleanup",
+                    PolarisTaskConstants.ENCRYPTION_CONTEXT,
+                    "opaque-task-context"))
+            .build();
+
+    assertThat(supplier.apply(task, TableIdentifier.of(Namespace.of("ns"), "table")))
+        .isSameAs(fileIO);
+    assertThat(loadedProperties.get())
+        .containsEntry(PolarisTaskConstants.STORAGE_LOCATION, "file:///tmp/cleanup")
+        .doesNotContainKey(PolarisTaskConstants.ENCRYPTION_CONTEXT);
   }
 }
