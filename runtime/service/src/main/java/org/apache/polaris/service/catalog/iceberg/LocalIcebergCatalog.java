@@ -571,6 +571,10 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                   clone.put(CatalogProperties.FILE_IO_IMPL, ioImplClassName);
                   clone.putAll(properties);
                   clone.put(PolarisTaskConstants.STORAGE_LOCATION, lastMetadata.location());
+
+                  // Polaris does not write encrypted manifests here. Preserve the encryption
+                  // context only so the asynchronous server-side purge can read manifest lists
+                  // and manifests that were written by the engine and enumerate files to delete.
                   PolarisEncryptionUtil.addCleanupTaskEncryptionProperties(
                       clone, catalogProperties, lastMetadata);
                   return clone;
