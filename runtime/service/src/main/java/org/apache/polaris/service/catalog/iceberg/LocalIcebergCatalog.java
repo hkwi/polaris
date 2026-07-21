@@ -135,6 +135,7 @@ import org.apache.polaris.service.catalog.SupportsNotifications;
 import org.apache.polaris.service.catalog.common.CatalogUtils;
 import org.apache.polaris.service.catalog.common.LocationUtils;
 import org.apache.polaris.service.catalog.io.FileIOFactory;
+import org.apache.polaris.service.catalog.io.PolarisEncryptionUtil;
 import org.apache.polaris.service.catalog.io.StorageAccessConfigProvider;
 import org.apache.polaris.service.catalog.validation.IcebergPropertiesValidation;
 import org.apache.polaris.service.events.EventAttributeMap;
@@ -570,6 +571,8 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                   clone.put(CatalogProperties.FILE_IO_IMPL, ioImplClassName);
                   clone.putAll(properties);
                   clone.put(PolarisTaskConstants.STORAGE_LOCATION, lastMetadata.location());
+                  PolarisEncryptionUtil.addCleanupTaskEncryptionProperties(
+                      clone, catalogProperties, lastMetadata);
                   return clone;
                 })
             .orElse(Map.of());
