@@ -45,6 +45,7 @@ import org.apache.polaris.core.entity.PrincipalEntity;
 import org.apache.polaris.core.entity.TaskEntity;
 import org.apache.polaris.core.exceptions.AlreadyExistsException;
 import org.apache.polaris.core.persistence.dao.entity.BaseResult;
+import org.apache.polaris.core.persistence.dao.entity.DropEntityResult;
 import org.apache.polaris.core.persistence.pagination.PageToken;
 import org.assertj.core.api.Assertions;
 import org.assertj.core.api.InstanceOfAssertFactories;
@@ -270,6 +271,42 @@ public abstract class BasePolarisMetaStoreManagerTest {
   protected void testDropEntities() {
     // allocate test driver
     polarisTestMetaStoreManager.testDropEntities();
+  }
+
+  @Test
+  protected void testDropEntityRejectsStaleRevision() {
+    PolarisMetaStoreManager metaStoreManager = polarisTestMetaStoreManager.polarisMetaStoreManager;
+    PolarisCallContext callCtx = polarisTestMetaStoreManager.polarisCallContext;
+    PolarisBaseEntity createdEntity =
+        metaStoreManager
+            .createEntitiesIfNotExist(callCtx, null, List.of(createTask("stale-drop-task", 200L)))
+            .getEntities()
+            .get(0);
+    PolarisBaseEntity updatedEntity =
+        metaStoreManager
+            .updateEntityPropertiesIfNotChanged(
+                callCtx,
+                null,
+                new PolarisBaseEntity.Builder(createdEntity)
+                    .properties("{\"updated\":\"true\"}")
+                    .build())
+            .getEntity();
+
+    Assertions.assertThat(updatedEntity).isNotNull();
+    DropEntityResult result =
+        metaStoreManager.dropEntityIfExists(callCtx, null, createdEntity, Map.of(), false);
+
+    Assertions.assertThat(result.getReturnStatus())
+        .isEqualTo(BaseResult.ReturnStatus.TARGET_ENTITY_CONCURRENTLY_MODIFIED);
+    Assertions.assertThat(
+            metaStoreManager
+                .loadEntity(
+                    callCtx,
+                    updatedEntity.getCatalogId(),
+                    updatedEntity.getId(),
+                    updatedEntity.getType())
+                .getEntity())
+        .isEqualTo(updatedEntity);
   }
 
   /** Test that granting/revoking privileges works well */

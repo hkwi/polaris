@@ -24,7 +24,6 @@ import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.stream.Stream;
 import org.apache.iceberg.MetadataUpdate;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
@@ -78,7 +77,7 @@ public class IcebergCatalogHandlerFineGrainedDisabledTest extends PolarisAuthzTe
         UpdateTableRequest.create(
             TABLE_NS1A_2,
             List.of(), // no requirements
-            List.of(new MetadataUpdate.AssignUUID(UUID.randomUUID().toString())));
+            List.of(new MetadataUpdate.AssignUUID(tableUuid(TABLE_NS1A_2))));
 
     // With fine-grained authorization disabled, even having the specific fine-grained privilege
     // should be insufficient - the system should require the broader privileges

@@ -18,22 +18,29 @@
  */
 package org.apache.polaris.service.task;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.apache.iceberg.BaseMetastoreTableOperations.METADATA_HASH_PROP;
 import static org.apache.polaris.service.task.TaskTestUtils.addTaskLocation;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.google.common.hash.Hashing;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.io.IOException;
 import java.time.Clock;
+import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.PartitionStatisticsFile;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StatisticsFile;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
@@ -74,6 +81,30 @@ class TableCleanupTaskHandlerTest {
         Mockito.mock(), clock, metaStoreManagerFactory, taskFileIOSupplier);
   }
 
+  private static IcebergTableLikeEntity trustedTableEntity(
+      TableIdentifier tableIdentifier, String metadataFile, TableMetadata metadata) {
+    String metadataHash =
+        Base64.getEncoder()
+            .encodeToString(
+                Hashing.sha256().hashString(TableMetadataParser.toJson(metadata), UTF_8).asBytes());
+    return new IcebergTableLikeEntity.Builder(
+            PolarisEntitySubType.ICEBERG_TABLE, tableIdentifier, metadataFile)
+        .setInternalProperties(
+            Map.of(
+                "metadata-integrity-version",
+                "1",
+                METADATA_HASH_PROP,
+                metadataHash,
+                "metadata-encryption-key-state",
+                "none",
+                IcebergTableLikeEntity.TABLE_UUID,
+                metadata.uuid()))
+        .setName("table1")
+        .setCatalogId(1)
+        .setCreateTimestamp(100)
+        .build();
+  }
+
   @BeforeEach
   void setup() {
     QuarkusMock.installMockForType(realmContext, RealmContext.class);
@@ -97,19 +128,14 @@ class TableCleanupTaskHandlerTest {
             snapshot.sequenceNumber(),
             "/metadata/" + UUID.randomUUID() + ".stats",
             fileIO);
-    TaskTestUtils.writeTableMetadata(fileIO, metadataFile, List.of(statisticsFile), snapshot);
+    TableMetadata metadata =
+        TaskTestUtils.writeTableMetadata(fileIO, metadataFile, List.of(statisticsFile), snapshot);
 
     TaskEntity task =
         new TaskEntity.Builder()
             .setName("cleanup_" + tableIdentifier)
             .withTaskType(AsyncTaskType.ENTITY_CLEANUP_SCHEDULER)
-            .withData(
-                new IcebergTableLikeEntity.Builder(
-                        PolarisEntitySubType.ICEBERG_TABLE, tableIdentifier, metadataFile)
-                    .setName("table1")
-                    .setCatalogId(1)
-                    .setCreateTimestamp(100)
-                    .build())
+            .withData(trustedTableEntity(tableIdentifier, metadataFile, metadata))
             .build();
     task = addTaskLocation(task);
     Assertions.assertThatPredicate(handler::canHandleTask).accepts(task);
@@ -149,6 +175,47 @@ class TableCleanupTaskHandlerTest {
   }
 
   @Test
+  public void testTableCleanupRejectsTamperedPlaintextMetadata() throws IOException {
+    FileIO fileIO =
+        new InMemoryFileIO() {
+          @Override
+          public void close() {
+            // no-op
+          }
+        };
+    TableIdentifier tableIdentifier = TableIdentifier.of(Namespace.of("db1", "schema1"), "table1");
+    TableCleanupTaskHandler handler = newTableCleanupTaskHandler(fileIO);
+    String metadataFile = "v1-tampered.metadata.json";
+    TableMetadata metadata = TaskTestUtils.writeTableMetadata(fileIO, metadataFile);
+    IcebergTableLikeEntity tableEntity =
+        trustedTableEntity(tableIdentifier, metadataFile, metadata);
+
+    TableMetadata tamperedMetadata =
+        TableMetadata.buildFrom(metadata).setProperties(Map.of("tampered", "true")).build();
+    try (var out = fileIO.newOutputFile(metadataFile).createOrOverwrite()) {
+      out.write(TableMetadataParser.toJson(tamperedMetadata).getBytes(UTF_8));
+    }
+
+    TaskEntity task =
+        addTaskLocation(
+            new TaskEntity.Builder()
+                .setName("cleanup_" + tableIdentifier)
+                .withTaskType(AsyncTaskType.ENTITY_CLEANUP_SCHEDULER)
+                .withData(tableEntity)
+                .build());
+
+    assertThatThrownBy(() -> handler.handleTask(task, callContext))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("Table metadata does not match the trusted catalog pointer");
+    assertThat(TaskUtils.exists(metadataFile, fileIO)).isTrue();
+    assertThat(
+            metaStoreManager
+                .loadTasks(callContext.getPolarisCallContext(), "test", PageToken.fromLimit(1))
+                .getEntities())
+        .isEmpty();
+  }
+
+  @Test
   @Timeout(60)
   public void testTableCleanupClampsNonPositiveBatchSize() throws IOException {
     FileIO fileIO = new InMemoryFileIO();
@@ -167,19 +234,14 @@ class TableCleanupTaskHandlerTest {
             snapshot.sequenceNumber(),
             "/metadata/" + UUID.randomUUID() + ".stats",
             fileIO);
-    TaskTestUtils.writeTableMetadata(fileIO, metadataFile, List.of(statisticsFile), snapshot);
+    TableMetadata metadata =
+        TaskTestUtils.writeTableMetadata(fileIO, metadataFile, List.of(statisticsFile), snapshot);
 
     TaskEntity task =
         new TaskEntity.Builder()
             .setName("cleanup_" + tableIdentifier)
             .withTaskType(AsyncTaskType.ENTITY_CLEANUP_SCHEDULER)
-            .withData(
-                new IcebergTableLikeEntity.Builder(
-                        PolarisEntitySubType.ICEBERG_TABLE, tableIdentifier, metadataFile)
-                    .setName("table1")
-                    .setCatalogId(1)
-                    .setCreateTimestamp(100)
-                    .build())
+            .withData(trustedTableEntity(tableIdentifier, metadataFile, metadata))
             .build();
     task = addTaskLocation(task);
     Assertions.assertThatPredicate(handler::canHandleTask).accepts(task);
@@ -222,15 +284,10 @@ class TableCleanupTaskHandlerTest {
     TestSnapshot snapshot =
         TaskTestUtils.newSnapshot(fileIO, "manifestList.avro", 1, snapshotId, 99L, manifestFile);
     String metadataFile = "v1-49494949.metadata.json";
-    TaskTestUtils.writeTableMetadata(fileIO, metadataFile, snapshot);
+    TableMetadata metadata = TaskTestUtils.writeTableMetadata(fileIO, metadataFile, snapshot);
 
     IcebergTableLikeEntity icebergTableLikeEntity =
-        new IcebergTableLikeEntity.Builder(
-                PolarisEntitySubType.ICEBERG_TABLE, tableIdentifier, metadataFile)
-            .setName("table1")
-            .setCatalogId(1)
-            .setCreateTimestamp(100)
-            .build();
+        trustedTableEntity(tableIdentifier, metadataFile, metadata);
     TaskEntity task =
         new TaskEntity.Builder()
             .setName("cleanup_" + tableIdentifier)
@@ -279,19 +336,13 @@ class TableCleanupTaskHandlerTest {
     TestSnapshot snapshot =
         TaskTestUtils.newSnapshot(fileIO, "manifestList.avro", 1, snapshotId, 99L, manifestFile);
     String metadataFile = "v1-49494949.metadata.json";
-    TaskTestUtils.writeTableMetadata(fileIO, metadataFile, snapshot);
+    TableMetadata metadata = TaskTestUtils.writeTableMetadata(fileIO, metadataFile, snapshot);
 
     TaskEntity task =
         new TaskEntity.Builder()
             .setName("cleanup_" + tableIdentifier)
             .withTaskType(AsyncTaskType.ENTITY_CLEANUP_SCHEDULER)
-            .withData(
-                new IcebergTableLikeEntity.Builder(
-                        PolarisEntitySubType.ICEBERG_TABLE, tableIdentifier, metadataFile)
-                    .setName("table1")
-                    .setCatalogId(1)
-                    .setCreateTimestamp(100)
-                    .build())
+            .withData(trustedTableEntity(tableIdentifier, metadataFile, metadata))
             .build();
     task = addTaskLocation(task);
     Assertions.assertThatPredicate(handler::canHandleTask).accepts(task);
@@ -398,20 +449,15 @@ class TableCleanupTaskHandlerTest {
             snapshot2.sequenceNumber(),
             "/metadata/" + UUID.randomUUID() + ".stats",
             fileIO);
-    TaskTestUtils.writeTableMetadata(
-        fileIO, metadataFile, List.of(statisticsFile1, statisticsFile2), snapshot, snapshot2);
+    TableMetadata metadata =
+        TaskTestUtils.writeTableMetadata(
+            fileIO, metadataFile, List.of(statisticsFile1, statisticsFile2), snapshot, snapshot2);
 
     TaskEntity task =
         new TaskEntity.Builder()
             .setName("cleanup_" + tableIdentifier)
             .withTaskType(AsyncTaskType.ENTITY_CLEANUP_SCHEDULER)
-            .withData(
-                new IcebergTableLikeEntity.Builder(
-                        PolarisEntitySubType.ICEBERG_TABLE, tableIdentifier, metadataFile)
-                    .setName("table1")
-                    .setCatalogId(1)
-                    .setCreateTimestamp(100)
-                    .build())
+            .withData(trustedTableEntity(tableIdentifier, metadataFile, metadata))
             .build();
     task = addTaskLocation(task);
     Assertions.assertThatPredicate(handler::canHandleTask).accepts(task);
@@ -557,14 +603,15 @@ class TableCleanupTaskHandlerTest {
             "/metadata/" + "partition-stats-" + UUID.randomUUID() + ".parquet",
             fileIO);
     String secondMetadataFile = "v1-295495060.metadata.json";
-    TaskTestUtils.writeTableMetadata(
-        fileIO,
-        secondMetadataFile,
-        firstMetadata,
-        firstMetadataFile,
-        List.of(statisticsFile2),
-        List.of(partitionStatisticsFile2),
-        snapshot2);
+    TableMetadata secondMetadata =
+        TaskTestUtils.writeTableMetadata(
+            fileIO,
+            secondMetadataFile,
+            firstMetadata,
+            firstMetadataFile,
+            List.of(statisticsFile2),
+            List.of(partitionStatisticsFile2),
+            snapshot2);
     assertThat(TaskUtils.exists(firstMetadataFile, fileIO)).isTrue();
     assertThat(TaskUtils.exists(secondMetadataFile, fileIO)).isTrue();
 
@@ -572,13 +619,7 @@ class TableCleanupTaskHandlerTest {
         new TaskEntity.Builder()
             .setName("cleanup_" + tableIdentifier)
             .withTaskType(AsyncTaskType.ENTITY_CLEANUP_SCHEDULER)
-            .withData(
-                new IcebergTableLikeEntity.Builder(
-                        PolarisEntitySubType.ICEBERG_TABLE, tableIdentifier, secondMetadataFile)
-                    .setName("table1")
-                    .setCatalogId(1)
-                    .setCreateTimestamp(100)
-                    .build())
+            .withData(trustedTableEntity(tableIdentifier, secondMetadataFile, secondMetadata))
             .build();
     task = addTaskLocation(task);
 

@@ -1147,7 +1147,7 @@ public abstract class AbstractIcebergCatalogHandlerAuthzTest extends PolarisAuth
         UpdateTableRequest.create(
             TABLE_NS1A_2,
             List.of(), // no requirements
-            List.of(new MetadataUpdate.AssignUUID(UUID.randomUUID().toString())));
+            List.of(new MetadataUpdate.AssignUUID(tableUuid(TABLE_NS1A_2))));
 
     // With fine-grained authorization disabled, TABLE_WRITE_PROPERTIES should work
     // even for operations that would require specific privileges when enabled
@@ -1987,7 +1987,7 @@ public abstract class AbstractIcebergCatalogHandlerAuthzTest extends PolarisAuth
     createPayload.setTableUuid(tableUuid);
     createPayload.setTimestamp(230950845L);
     createRequest.setPayload(createPayload);
-    writeTableMetadata(metadataLocation);
+    writeTableMetadata(metadataLocation, tableUuid);
     return createRequest;
   }
 
@@ -2003,7 +2003,7 @@ public abstract class AbstractIcebergCatalogHandlerAuthzTest extends PolarisAuth
     updatePayload.setTableUuid(tableUuid);
     updatePayload.setTimestamp(330950845L);
     updateRequest.setPayload(updatePayload);
-    writeTableMetadata(metadataLocation);
+    writeTableMetadata(metadataLocation, tableUuid);
     return updateRequest;
   }
 
@@ -2033,7 +2033,7 @@ public abstract class AbstractIcebergCatalogHandlerAuthzTest extends PolarisAuth
     return validateRequest;
   }
 
-  private static void writeTableMetadata(String metadataLocation) {
+  private static void writeTableMetadata(String metadataLocation, String tableUuid) {
     String fileIoImpl = "org.apache.iceberg.inmemory.InMemoryFileIO";
     FileIO fileIO = CatalogUtil.loadFileIO(fileIoImpl, Map.of(), null);
     TableMetadata tableMetadata =
@@ -2042,7 +2042,7 @@ public abstract class AbstractIcebergCatalogHandlerAuthzTest extends PolarisAuth
             .setLocation(metadataLocation)
             .addPartitionSpec(PartitionSpec.unpartitioned())
             .addSortOrder(SortOrder.unsorted())
-            .assignUUID()
+            .assignUUID(tableUuid)
             .build();
     TableMetadataParser.overwrite(tableMetadata, fileIO.newOutputFile(metadataLocation));
   }
@@ -2054,7 +2054,7 @@ public abstract class AbstractIcebergCatalogHandlerAuthzTest extends PolarisAuth
         UpdateTableRequest.create(
             TABLE_NS1A_2,
             List.of(), // no requirements
-            List.of(new MetadataUpdate.AssignUUID(UUID.randomUUID().toString())));
+            List.of(new MetadataUpdate.AssignUUID(tableUuid(TABLE_NS1A_2))));
 
     return authzTestsBuilder("updateTable (AssignUUID)")
         .action(() -> newHandler().updateTable(TABLE_NS1A_2, request))
@@ -2170,7 +2170,7 @@ public abstract class AbstractIcebergCatalogHandlerAuthzTest extends PolarisAuth
             TABLE_NS1A_2,
             List.of(), // no requirements
             List.of(
-                new MetadataUpdate.AssignUUID(UUID.randomUUID().toString()),
+                new MetadataUpdate.AssignUUID(tableUuid(TABLE_NS1A_2)),
                 new MetadataUpdate.UpgradeFormatVersion(2),
                 new MetadataUpdate.SetProperties(Map.of("test.property", "test.value")),
                 new MetadataUpdate.RemoveProperties(Set.of("property.to.remove"))));
@@ -2198,7 +2198,7 @@ public abstract class AbstractIcebergCatalogHandlerAuthzTest extends PolarisAuth
             TABLE_NS1A_2,
             List.of(), // no requirements
             List.of(
-                new MetadataUpdate.AssignUUID(UUID.randomUUID().toString()),
+                new MetadataUpdate.AssignUUID(tableUuid(TABLE_NS1A_2)),
                 new MetadataUpdate.SetProperties(Map.of("structure.test", "value"))));
 
     return authzTestsBuilder("updateTable (TABLE_MANAGE_STRUCTURE sufficient for non-snapshot ops)")
