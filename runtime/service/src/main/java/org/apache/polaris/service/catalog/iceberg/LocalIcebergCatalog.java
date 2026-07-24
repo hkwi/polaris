@@ -465,6 +465,8 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
     }
 
     IcebergTableLikeEntity existingEntity = IcebergTableLikeEntity.of(rawEntity);
+    TableMetadata currentMetadata = newTableOps(identifier).current();
+    TableMetadataIntegrity.validateKeyIdForUpdate(existingEntity, currentMetadata, metadata);
 
     Map<String, String> storedProperties = buildTableMetadataPropertiesMap(metadata);
     IcebergTableLikeEntity updatedEntity =
@@ -476,8 +478,8 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
     updateTableLike(identifier, updatedEntity);
 
-    TableOperations ops = newTableOps(identifier);
-    return new BaseTable(ops, fullTableName(name(), identifier), metricsReporter());
+    return new BaseTable(
+        newTableOps(identifier), fullTableName(name(), identifier), metricsReporter());
   }
 
   @Override
@@ -1773,6 +1775,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
       }
 
       String latestLocation = entity != null ? entity.getMetadataLocation() : null;
+      IcebergTableLikeEntity currentEntity = entity;
       LOGGER.debug("Refreshing latestLocation: {}", latestLocation);
       if (latestLocation == null) {
         disableRefresh();
@@ -1803,7 +1806,9 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                       resolvedEntities,
                       new HashMap<>(tableDefaultProperties),
                       Set.of(PolarisStorageActions.READ, PolarisStorageActions.LIST));
-              return TableMetadataParser.read(fileIO, metadataLocation);
+              TableMetadata metadata = TableMetadataParser.read(fileIO, metadataLocation);
+              TableMetadataIntegrity.validateCurrentMetadata(currentEntity, metadata);
+              return metadata;
             });
         if (polarisEventDispatcher.hasListeners(PolarisEventType.AFTER_REFRESH_TABLE)) {
           polarisEventDispatcher.dispatch(
@@ -1928,6 +1933,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
         IcebergTableLikeEntity entity =
             IcebergTableLikeEntity.of(
                 resolvedPath == null ? null : resolvedPath.getRawLeafEntity());
+        TableMetadataIntegrity.validateKeyIdForUpdate(entity, base, metadata);
         String existingLocation;
         if (null == entity) {
           existingLocation = null;
@@ -2154,6 +2160,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
           IcebergTableLikeEntity.LAST_PARTITION_ID,
           String.valueOf(metadata.lastAssignedPartitionId()));
     }
+    TableMetadataIntegrity.addIntegrityProperties(storedProperties, metadata);
     return storedProperties;
   }
 

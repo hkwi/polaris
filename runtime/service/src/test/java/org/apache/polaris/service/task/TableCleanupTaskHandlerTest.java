@@ -28,12 +28,14 @@ import jakarta.inject.Inject;
 import java.io.IOException;
 import java.time.Clock;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.PartitionStatisticsFile;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StatisticsFile;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
@@ -51,6 +53,7 @@ import org.apache.polaris.core.entity.table.IcebergTableLikeEntity;
 import org.apache.polaris.core.persistence.MetaStoreManagerFactory;
 import org.apache.polaris.core.persistence.PolarisMetaStoreManager;
 import org.apache.polaris.core.persistence.pagination.PageToken;
+import org.apache.polaris.service.catalog.iceberg.TableMetadataIntegrity;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -146,6 +149,47 @@ class TableCleanupTaskHandlerTest {
                         entity ->
                             entity.readData(
                                 BatchFileCleanupTaskHandler.BatchFileCleanupTask.class)));
+  }
+
+  @Test
+  public void testTableCleanupRejectsMetadataWithInvalidDigest() throws IOException {
+    FileIO fileIO =
+        new InMemoryFileIO() {
+          @Override
+          public void close() {
+            // no-op
+          }
+        };
+    TableIdentifier tableIdentifier = TableIdentifier.of("db1", "table1");
+    TableCleanupTaskHandler handler = newTableCleanupTaskHandler(fileIO);
+    String metadataFile = "v1-invalid-digest.metadata.json";
+    TaskTestUtils.writeTableMetadata(fileIO, metadataFile);
+
+    TaskEntity task =
+        new TaskEntity.Builder()
+            .setName("cleanup_" + tableIdentifier)
+            .withTaskType(AsyncTaskType.ENTITY_CLEANUP_SCHEDULER)
+            .withData(
+                new IcebergTableLikeEntity.Builder(
+                        PolarisEntitySubType.ICEBERG_TABLE,
+                        tableIdentifier,
+                        Map.of(),
+                        Map.of(
+                            TableProperties.ENCRYPTION_TABLE_KEY,
+                            "test-key",
+                            TableMetadataIntegrity.METADATA_HASH,
+                            "invalid"),
+                        metadataFile)
+                    .setName("table1")
+                    .setCatalogId(1)
+                    .setCreateTimestamp(100)
+                    .build())
+            .build();
+
+    Assertions.assertThatThrownBy(() -> handler.handleTask(addTaskLocation(task), callContext))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("Encrypted table metadata does not match the trusted catalog state");
+    assertThat(fileIO.newInputFile(metadataFile).exists()).isTrue();
   }
 
   @Test

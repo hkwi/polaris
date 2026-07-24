@@ -2531,6 +2531,61 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
   }
 
   @Test
+  public void testEncryptedTableIntegrity() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("register_encrypted_integrity");
+    TableIdentifier table = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    String tableLocation = STORAGE_LOCATION + "/register_encrypted_integrity/table";
+    String metadataLocation = tableLocation + "/metadata/v1.metadata.json";
+    Map<String, String> properties =
+        Map.of(
+            TableProperties.FORMAT_VERSION, "3", TableProperties.ENCRYPTION_TABLE_KEY, "test-key");
+    TableMetadata metadata =
+        TableMetadata.newTableMetadata(
+            SCHEMA, PartitionSpec.unpartitioned(), tableLocation, properties);
+    fileIO.addFile(metadataLocation, TableMetadataParser.toJson(metadata).getBytes(UTF_8));
+    catalog.registerTable(table, metadataLocation);
+    Table loaded = catalog.loadTable(table);
+
+    Assertions.assertThatThrownBy(
+            () ->
+                loaded
+                    .updateProperties()
+                    .set(TableProperties.ENCRYPTION_TABLE_KEY, "another-key")
+                    .commit())
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage("Cannot change or remove encryption key ID for an encrypted table");
+    Assertions.assertThatThrownBy(
+            () ->
+                catalog
+                    .loadTable(table)
+                    .updateProperties()
+                    .remove(TableProperties.ENCRYPTION_TABLE_KEY)
+                    .commit())
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage("Cannot change or remove encryption key ID for an encrypted table");
+
+    TableMetadata modified =
+        TableMetadata.buildFrom(metadata)
+            .setProperties(
+                Map.of(
+                    TableProperties.ENCRYPTION_TABLE_KEY,
+                    "test-key",
+                    TableProperties.COMMIT_NUM_RETRIES,
+                    "1"))
+            .build();
+    fileIO.addFile(metadataLocation, TableMetadataParser.toJson(modified).getBytes(UTF_8));
+
+    Assertions.assertThatThrownBy(() -> catalog.loadTable(table))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("Encrypted table metadata does not match the trusted catalog state");
+  }
+
+  @Test
   public void testRegisterTableOverwriteFalseRejectsExistingTable() {
     LocalIcebergCatalog catalog = catalog();
     Namespace namespace = Namespace.of("register_overwrite_conflict");
