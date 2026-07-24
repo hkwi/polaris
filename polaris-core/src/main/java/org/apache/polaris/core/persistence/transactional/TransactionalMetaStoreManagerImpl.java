@@ -1334,6 +1334,10 @@ public class TransactionalMetaStoreManagerImpl extends BaseMetaStoreManager {
     if (refreshEntityToDrop == null) {
       return new DropEntityResult(BaseResult.ReturnStatus.ENTITY_NOT_FOUND, null);
     }
+    if (entityToDrop.getEntityVersion() != refreshEntityToDrop.getEntityVersion()) {
+      return new DropEntityResult(
+          BaseResult.ReturnStatus.TARGET_ENTITY_CONCURRENTLY_MODIFIED, null);
+    }
 
     // ensure that this entity is droppable
     if (refreshEntityToDrop.cannotBeDroppedOrRenamed()) {

@@ -121,6 +121,7 @@ import org.apache.polaris.core.entity.CatalogEntity;
 import org.apache.polaris.core.entity.NamespaceEntity;
 import org.apache.polaris.core.entity.PolarisBaseEntity;
 import org.apache.polaris.core.entity.PolarisEntity;
+import org.apache.polaris.core.entity.PolarisEntityCore;
 import org.apache.polaris.core.entity.PolarisEntitySubType;
 import org.apache.polaris.core.entity.PolarisEntityType;
 import org.apache.polaris.core.entity.TaskEntity;
@@ -1582,24 +1583,27 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
 
     TableIdentifier table = TableIdentifier.of(namespace, "table");
 
-    catalog.createTable(
-        table,
-        new Schema(
-            Types.NestedField.required(1, "intType", Types.IntegerType.get()),
-            Types.NestedField.required(2, "stringType", Types.StringType.get())));
+    Table existingTable =
+        catalog.createTable(
+            table,
+            new Schema(
+                Types.NestedField.required(1, "intType", Types.IntegerType.get()),
+                Types.NestedField.required(2, "stringType", Types.StringType.get())));
+    TableMetadata currentMetadata = ((BaseTable) existingTable).operations().current();
+    TableMetadata updatedMetadata =
+        TableMetadata.buildFrom(currentMetadata).setLocation(tableLocation).build();
 
     NotificationRequest request = new NotificationRequest();
     request.setNotificationType(NotificationType.UPDATE);
     TableUpdateNotification update = new TableUpdateNotification();
     update.setMetadataLocation(tableMetadataLocation);
     update.setTableName(table.name());
-    update.setTableUuid(UUID.randomUUID().toString());
+    update.setTableUuid(currentMetadata.uuid());
     update.setTimestamp(230950845L);
     request.setPayload(update);
 
     fileIO.addFile(
-        tableMetadataLocation,
-        TableMetadataParser.toJson(createSampleTableMetadata(tableLocation)).getBytes(UTF_8));
+        tableMetadataLocation, TableMetadataParser.toJson(updatedMetadata).getBytes(UTF_8));
 
     Assertions.assertThat(catalog.sendNotification(table, request))
         .as("Notification should be sent successfully")
@@ -1610,6 +1614,17 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     Assertions.assertThat(catalog.tableExists(table))
         .as("Table should be created on receiving notification")
         .isTrue();
+    Assertions.assertThat(((BaseTable) catalog.loadTable(table)).operations().current().uuid())
+        .isEqualTo(currentMetadata.uuid());
+
+    TableMetadata tampered =
+        TableMetadata.buildFrom(updatedMetadata)
+            .setProperties(Map.of(TableProperties.COMMIT_NUM_RETRIES, "1"))
+            .build();
+    fileIO.addFile(tableMetadataLocation, TableMetadataParser.toJson(tampered).getBytes(UTF_8));
+    Assertions.assertThatThrownBy(() -> catalog.loadTable(table))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("Table metadata does not match the trusted catalog pointer");
   }
 
   @Test
@@ -2102,6 +2117,46 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
   }
 
   @Test
+  public void testPurgeRejectsConcurrentTableRevision() {
+    catalog.createNamespace(NS);
+    catalog.buildTable(TABLE, SCHEMA).create();
+
+    PolarisMetaStoreManager spiedManager = spy(metaStoreManager);
+    doAnswer(
+            invocation -> {
+              PolarisCallContext callContext = invocation.getArgument(0);
+              List<PolarisEntityCore> catalogPath = invocation.getArgument(1);
+              PolarisBaseEntity expectedEntity = invocation.getArgument(2);
+              Map<String, String> cleanupProperties = invocation.getArgument(3);
+              boolean cleanup = invocation.getArgument(4);
+
+              EntityResult updateResult =
+                  metaStoreManager.updateEntityPropertiesIfNotChanged(
+                      callContext,
+                      catalogPath,
+                      new PolarisBaseEntity.Builder(expectedEntity)
+                          .properties("{\"concurrent\":\"true\"}")
+                          .build());
+              Assertions.assertThat(updateResult).returns(true, EntityResult::isSuccess);
+              return metaStoreManager.dropEntityIfExists(
+                  callContext, catalogPath, expectedEntity, cleanupProperties, cleanup);
+            })
+        .when(spiedManager)
+        .dropEntityIfExists(any(), anyList(), any(), anyMap(), anyBoolean());
+
+    LocalIcebergCatalog spiedCatalog = newIcebergCatalog(CATALOG_NAME, spiedManager, fileIOFactory);
+    spiedCatalog.initialize(
+        CATALOG_NAME,
+        ImmutableMap.of(
+            CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.inmemory.InMemoryFileIO"));
+
+    Assertions.assertThatThrownBy(() -> spiedCatalog.dropTable(TABLE, true))
+        .isInstanceOf(CommitConflictException.class)
+        .hasMessageContaining("concurrently modified");
+    Assertions.assertThat(catalog.tableExists(TABLE)).isTrue();
+  }
+
+  @Test
   public void testDropTableWithUndroppableEntity() {
     catalog.createNamespace(NS);
     catalog.buildTable(TABLE, SCHEMA).create();
@@ -2415,14 +2470,11 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     Table created = catalog.buildTable(table, SCHEMA).create();
     TableMetadata currentMetadata = ((BaseTable) created).operations().current();
     String currentMetadataLocation = currentMetadata.metadataFileLocation();
-    String oldTableUuid = currentMetadata.uuid();
-    String newTableUuid = UUID.randomUUID().toString();
     String metadataDir =
         currentMetadataLocation.substring(0, currentMetadataLocation.lastIndexOf('/') + 1);
     String newMetadataLocation = metadataDir + "overwrite-v1.metadata.json";
-    String updatedMetadataJson =
-        TableMetadataParser.toJson(currentMetadata).replace(oldTableUuid, newTableUuid);
-    fileIO.addFile(newMetadataLocation, updatedMetadataJson.getBytes(UTF_8));
+    fileIO.addFile(
+        newMetadataLocation, TableMetadataParser.toJson(currentMetadata).getBytes(UTF_8));
 
     // Register with overwrite=true should update the metadata location
     Table overwritten = catalog.registerTable(table, newMetadataLocation, true);
@@ -2449,12 +2501,38 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     Assertions.assertThat(((BaseTable) overwritten).operations().current().metadataFileLocation())
         .isEqualTo(newMetadataLocation);
     Assertions.assertThat(((BaseTable) overwritten).operations().current().uuid())
-        .isEqualTo(newTableUuid);
+        .isEqualTo(currentMetadata.uuid());
     Assertions.assertThat(
             ((BaseTable) catalog.loadTable(table)).operations().current().metadataFileLocation())
         .isEqualTo(newMetadataLocation);
     Assertions.assertThat(((BaseTable) catalog.loadTable(table)).operations().current().uuid())
-        .isEqualTo(newTableUuid);
+        .isEqualTo(currentMetadata.uuid());
+  }
+
+  @Test
+  public void testRegisterTableOverwriteRejectsDifferentTableUuid() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("register_overwrite_uuid");
+    TableIdentifier table = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    Table created = catalog.buildTable(table, SCHEMA).create();
+    TableMetadata currentMetadata = ((BaseTable) created).operations().current();
+    String metadataDir =
+        currentMetadata
+            .metadataFileLocation()
+            .substring(0, currentMetadata.metadataFileLocation().lastIndexOf('/') + 1);
+    String replacementLocation = metadataDir + "different-uuid.metadata.json";
+    String replacementJson =
+        TableMetadataParser.toJson(currentMetadata)
+            .replace(currentMetadata.uuid(), UUID.randomUUID().toString());
+    fileIO.addFile(replacementLocation, replacementJson.getBytes(UTF_8));
+
+    Assertions.assertThatThrownBy(() -> catalog.registerTable(table, replacementLocation, true))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage("Cannot commit: Cannot change the table UUID");
   }
 
   @Test
@@ -2528,6 +2606,141 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
                 .current()
                 .metadataFileLocation())
         .isEqualTo(metadataLocation);
+  }
+
+  @Test
+  public void testTrustedMetadataPointerRejectsPlaintextTampering() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("trusted_pointer_plaintext");
+    TableIdentifier table = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    Table created = catalog.buildTable(table, SCHEMA).create();
+    TableMetadata metadata = ((BaseTable) created).operations().current();
+    String metadataLocation = metadata.metadataFileLocation();
+    TableMetadata tampered =
+        TableMetadata.buildFrom(metadata)
+            .setProperties(Map.of(TableProperties.COMMIT_NUM_RETRIES, "1"))
+            .build();
+    fileIO.addFile(metadataLocation, TableMetadataParser.toJson(tampered).getBytes(UTF_8));
+
+    Assertions.assertThatThrownBy(() -> catalog.loadTable(table))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("Table metadata does not match the trusted catalog pointer");
+  }
+
+  @Test
+  public void testEncryptionKeyStateCannotBeAddedChangedOrRemoved() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("trusted_pointer_key_state");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    TableIdentifier plaintextTable = TableIdentifier.of(namespace, "plaintext");
+    Table plaintext = catalog.buildTable(plaintextTable, SCHEMA).create();
+    Assertions.assertThatThrownBy(
+            () ->
+                plaintext
+                    .updateProperties()
+                    .set(TableProperties.ENCRYPTION_TABLE_KEY, "test-key")
+                    .commit())
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage("Cannot add, change, or remove encryption key ID after table creation");
+
+    TableIdentifier encryptedTable = TableIdentifier.of(namespace, "encrypted");
+    String tableLocation = STORAGE_LOCATION + "/trusted_pointer_key_state/encrypted";
+    String metadataLocation = tableLocation + "/metadata/v1.metadata.json";
+    TableMetadata encryptedMetadata =
+        TableMetadata.newTableMetadata(
+            SCHEMA,
+            PartitionSpec.unpartitioned(),
+            tableLocation,
+            Map.of(
+                TableProperties.FORMAT_VERSION,
+                "3",
+                TableProperties.ENCRYPTION_TABLE_KEY,
+                "test-key"));
+    fileIO.addFile(metadataLocation, TableMetadataParser.toJson(encryptedMetadata).getBytes(UTF_8));
+    Table encrypted = catalog.registerTable(encryptedTable, metadataLocation);
+
+    Assertions.assertThatThrownBy(
+            () ->
+                encrypted
+                    .updateProperties()
+                    .set(TableProperties.ENCRYPTION_TABLE_KEY, "another-key")
+                    .commit())
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage("Cannot add, change, or remove encryption key ID after table creation");
+    Assertions.assertThatThrownBy(
+            () ->
+                catalog
+                    .loadTable(encryptedTable)
+                    .updateProperties()
+                    .remove(TableProperties.ENCRYPTION_TABLE_KEY)
+                    .commit())
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage("Cannot add, change, or remove encryption key ID after table creation");
+  }
+
+  @Test
+  public void testLegacyTableFailsClosedUntilRegisterOverwriteAttestsIt() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("trusted_pointer_legacy");
+    TableIdentifier table = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    Table created = catalog.buildTable(table, SCHEMA).create();
+    String metadataLocation = ((BaseTable) created).operations().current().metadataFileLocation();
+
+    EntityResult namespaceResult =
+        metaStoreManager.readEntityByName(
+            polarisContext,
+            List.of(catalogEntity),
+            PolarisEntityType.NAMESPACE,
+            PolarisEntitySubType.NULL_SUBTYPE,
+            namespace.toString());
+    Assertions.assertThat(namespaceResult).returns(true, EntityResult::isSuccess);
+    EntityResult tableResult =
+        metaStoreManager.readEntityByName(
+            polarisContext,
+            List.of(catalogEntity, namespaceResult.getEntity()),
+            PolarisEntityType.TABLE_LIKE,
+            PolarisEntitySubType.ICEBERG_TABLE,
+            table.name());
+    Assertions.assertThat(tableResult).returns(true, EntityResult::isSuccess);
+
+    IcebergTableLikeEntity currentEntity = IcebergTableLikeEntity.of(tableResult.getEntity());
+    Map<String, String> legacyProperties =
+        new HashMap<>(currentEntity.getInternalPropertiesAsMap());
+    legacyProperties.remove(TableMetadataAdmission.INTEGRITY_VERSION);
+    legacyProperties.remove(TableMetadataAdmission.METADATA_HASH);
+    legacyProperties.remove(TableMetadataAdmission.ENCRYPTION_KEY_STATE);
+    IcebergTableLikeEntity legacyEntity =
+        new IcebergTableLikeEntity.Builder(currentEntity)
+            .setInternalProperties(legacyProperties)
+            .build();
+    EntityResult updateResult =
+        metaStoreManager.updateEntityPropertiesIfNotChanged(
+            polarisContext,
+            List.of(
+                PolarisEntity.toCore(catalogEntity),
+                PolarisEntity.toCore(namespaceResult.getEntity())),
+            legacyEntity);
+    Assertions.assertThat(updateResult).returns(true, EntityResult::isSuccess);
+
+    Assertions.assertThatThrownBy(() -> catalog.loadTable(table))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("has not been attested");
+
+    Table attested = catalog.registerTable(table, metadataLocation, true);
+    Assertions.assertThat(((BaseTable) attested).operations().current().metadataFileLocation())
+        .isEqualTo(metadataLocation);
+    Assertions.assertThat(catalog.loadTable(table)).isNotNull();
   }
 
   @Test
@@ -2663,18 +2876,21 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
       catalog.createNamespace(namespace);
     }
 
-    if (overwrite) {
-      catalog.buildTable(table, SCHEMA).create();
-    }
+    Table existingTable = overwrite ? catalog.buildTable(table, SCHEMA).create() : null;
 
     String tableLocation =
         STORAGE_LOCATION + "/register_metadata_outside_table_location_allowed/table/";
     String metadataLocation =
         STORAGE_LOCATION
             + "/register_metadata_outside_table_location_allowed/other_dir/v1.metadata.json";
-    fileIO.addFile(
-        metadataLocation,
-        TableMetadataParser.toJson(createSampleTableMetadata(tableLocation)).getBytes(UTF_8));
+    TableMetadata tableMetadata = createSampleTableMetadata(tableLocation);
+    if (existingTable != null) {
+      tableMetadata =
+          TableMetadata.buildFrom(tableMetadata)
+              .assignUUID(((BaseTable) existingTable).operations().current().uuid())
+              .build();
+    }
+    fileIO.addFile(metadataLocation, TableMetadataParser.toJson(tableMetadata).getBytes(UTF_8));
 
     Assertions.assertThat(catalog.registerTable(table, metadataLocation, overwrite)).isNotNull();
   }

@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.catalog.Catalog;
@@ -183,6 +184,10 @@ public abstract class PolarisAuthzTestBase {
   protected PolarisPrincipal authenticatedRoot;
   protected PolarisAuthorizer polarisAuthorizer;
   protected PolarisCallContext polarisContext;
+
+  protected String tableUuid(TableIdentifier tableIdentifier) {
+    return ((BaseTable) baseCatalog.loadTable(tableIdentifier)).operations().current().uuid();
+  }
 
   @BeforeAll
   public static void setUpMocks() {
