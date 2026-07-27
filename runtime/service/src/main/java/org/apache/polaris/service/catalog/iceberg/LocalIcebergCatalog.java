@@ -469,10 +469,14 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
     }
 
     IcebergTableLikeEntity existingEntity = IcebergTableLikeEntity.of(rawEntity);
+    TableMetadataTransitionValidator.validate(existingEntity.getPropertiesAsMap(), metadata);
 
     Map<String, String> storedProperties = buildTableMetadataPropertiesMap(metadata);
+    Map<String, String> entityProperties = new HashMap<>(existingEntity.getPropertiesAsMap());
+    TableMetadataTransitionValidator.pin(entityProperties, metadata);
     IcebergTableLikeEntity updatedEntity =
         new IcebergTableLikeEntity.Builder(existingEntity)
+            .setProperties(entityProperties)
             .setInternalProperties(storedProperties)
             .setBaseLocation(metadata.location())
             .setMetadataLocation(metadataFileLocation)
@@ -1966,10 +1970,17 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
             throw alreadyExistsExceptionWithSameNameForTableLikeEntity(tableIdentifier, subType);
           }
         }
-        Map<String, String> storedProperties = buildTableMetadataPropertiesMap(metadata);
         IcebergTableLikeEntity entity =
             IcebergTableLikeEntity.of(
                 resolvedPath == null ? null : resolvedPath.getRawLeafEntity());
+        if (base != null) {
+          TableMetadataTransitionValidator.validate(
+              entity == null ? Map.of() : entity.getPropertiesAsMap(), metadata);
+        }
+        Map<String, String> entityProperties =
+            new HashMap<>(entity == null ? Map.of() : entity.getPropertiesAsMap());
+        TableMetadataTransitionValidator.pin(entityProperties, metadata);
+        Map<String, String> storedProperties = buildTableMetadataPropertiesMap(metadata);
         String existingLocation;
         if (null == entity) {
           existingLocation = null;
@@ -1979,7 +1990,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
               new IcebergTableLikeEntity.Builder(
                       PolarisEntitySubType.ICEBERG_TABLE,
                       tableIdentifier,
-                      Map.of(),
+                      entityProperties,
                       internalProperties,
                       newLocation)
                   .setCatalogId(getCatalogId())
@@ -1993,6 +2004,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
               idempotencyInternalProperties(storedProperties, entity);
           entity =
               new IcebergTableLikeEntity.Builder(entity)
+                  .setProperties(entityProperties)
                   .setInternalProperties(internalProperties)
                   .setBaseLocation(metadata.location())
                   .setMetadataLocation(newLocation)
@@ -3091,6 +3103,16 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
 
       // finally, validate that the metadata file is within the table directory
       validateMetadataFileInTableDir(tableIdentifier, tableMetadata);
+
+      if (existingLocation != null) {
+        TableMetadataTransitionValidator.validate(entity.getPropertiesAsMap(), tableMetadata);
+      }
+      Map<String, String> entityProperties = new HashMap<>(entity.getPropertiesAsMap());
+      TableMetadataTransitionValidator.pin(entityProperties, tableMetadata);
+      entity =
+          new IcebergTableLikeEntity.Builder(entity)
+              .setProperties(entityProperties)
+              .build();
 
       // TODO: These might fail due to concurrent update; we need to do a retry in those cases.
       if (null == existingLocation) {
