@@ -1770,6 +1770,100 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
   }
 
   @Test
+  public void testUpdateNotificationPinsAdmittedMetadataForMissingTable() {
+    Assumptions.assumeTrue(
+        supportsNotifications(), "Only applicable if notifications are supported");
+
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("metadata_integrity_notification_create");
+    TableIdentifier tableId = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    String tableLocation = STORAGE_LOCATION + "/metadata_integrity_notification_create/table/";
+    String metadataLocation = tableLocation + "metadata/v1.metadata.json";
+    TableMetadata admitted = createEncryptedSampleTableMetadata(tableLocation);
+    TableMetadataParser.write(admitted, fileIO.newOutputFile(metadataLocation));
+
+    NotificationRequest request = new NotificationRequest();
+    request.setNotificationType(NotificationType.UPDATE);
+    TableUpdateNotification update = new TableUpdateNotification();
+    update.setMetadataLocation(metadataLocation);
+    update.setTableName(tableId.name());
+    update.setTableUuid(admitted.uuid());
+    update.setTimestamp(230950845L);
+    request.setPayload(update);
+
+    Assertions.assertThat(catalog.sendNotification(tableId, request)).isTrue();
+
+    TableMetadata modified =
+        TableMetadata.buildFrom(admitted)
+            .setProperties(
+                Map.of(
+                    TableProperties.ENCRYPTION_TABLE_KEY,
+                    "key-1",
+                    TableProperties.COMMIT_NUM_RETRIES,
+                    "1"))
+            .build();
+    TableMetadataParser.overwrite(modified, fileIO.newOutputFile(metadataLocation));
+
+    Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("metadata loaded from storage has been modified");
+  }
+
+  @Test
+  public void testUpdateNotificationRejectsProtectedMetadataWithoutExpectedDigest() {
+    Assumptions.assumeTrue(
+        supportsNotifications(), "Only applicable if notifications are supported");
+
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("metadata_integrity_notification");
+    TableIdentifier tableId = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    Table table =
+        catalog
+            .buildTable(tableId, SCHEMA)
+            .withProperty(TableProperties.FORMAT_VERSION, "3")
+            .withProperty(TableProperties.ENCRYPTION_TABLE_KEY, "key-1")
+            .create();
+    TableMetadata current = ((BaseTable) table).operations().current();
+    String metadataLocation =
+        current.location() + "/metadata/notification-readmission.metadata.json";
+    TableMetadata admitted =
+        TableMetadata.buildFrom(current)
+            .setProperties(
+                Map.of(
+                    TableProperties.ENCRYPTION_TABLE_KEY,
+                    "key-1",
+                    TableProperties.COMMIT_NUM_RETRIES,
+                    "1"))
+            .build();
+    TableMetadataParser.write(admitted, fileIO.newOutputFile(metadataLocation));
+
+    NotificationRequest request = new NotificationRequest();
+    request.setNotificationType(NotificationType.UPDATE);
+    TableUpdateNotification update = new TableUpdateNotification();
+    update.setMetadataLocation(metadataLocation);
+    update.setTableName(tableId.name());
+    update.setTableUuid(current.uuid());
+    update.setTimestamp(230950845L);
+    request.setPayload(update);
+
+    Assertions.assertThatThrownBy(() -> catalog.sendNotification(tableId, request))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage(
+            "Cannot update a protected table by notification without an authenticated expected "
+                + "metadata digest");
+    Assertions.assertThat(catalog.loadTable(tableId).properties())
+        .doesNotContainKey(TableProperties.COMMIT_NUM_RETRIES);
+  }
+
+  @Test
   public void testUpdateNotificationWhenTableExistsInDisallowedLocation() {
     Assumptions.assumeTrue(
         requiresNamespaceCreate(),
@@ -2414,6 +2508,15 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     return TableMetadata.newTableMetadata(schema, partitionSpec, tableLocation, ImmutableMap.of());
   }
 
+  private TableMetadata createEncryptedSampleTableMetadata(String tableLocation) {
+    TableMetadata metadata = createSampleTableMetadata(tableLocation);
+    return TableMetadata.newTableMetadata(
+        metadata.schema(),
+        metadata.spec(),
+        tableLocation,
+        Map.of(TableProperties.FORMAT_VERSION, "3", TableProperties.ENCRYPTION_TABLE_KEY, "key-1"));
+  }
+
   private ViewMetadata createSampleViewMetadata(String viewLocation) {
     return ViewMetadata.builder()
         .setLocation(viewLocation)
@@ -2612,6 +2715,86 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
         .hasMessageContaining("Invalid properties for v2")
         .hasMessageContaining(TableProperties.ENCRYPTION_TABLE_KEY);
     Assertions.assertThat(catalog.tableExists(tableId)).isFalse();
+  }
+
+  @Test
+  public void testRegisterTablePinsAdmittedMetadata() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("metadata_integrity_register");
+    TableIdentifier tableId = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    String tableLocation = STORAGE_LOCATION + "/metadata_integrity_register/table/";
+    String metadataLocation = tableLocation + "metadata/v1.metadata.json";
+    TableMetadata admitted = createEncryptedSampleTableMetadata(tableLocation);
+    TableMetadataParser.write(admitted, fileIO.newOutputFile(metadataLocation));
+
+    Assertions.assertThat(catalog.registerTable(tableId, metadataLocation)).isNotNull();
+
+    TableMetadata modified =
+        TableMetadata.buildFrom(admitted)
+            .setProperties(
+                Map.of(
+                    TableProperties.ENCRYPTION_TABLE_KEY,
+                    "key-1",
+                    TableProperties.COMMIT_NUM_RETRIES,
+                    "1"))
+            .build();
+    TableMetadataParser.overwrite(modified, fileIO.newOutputFile(metadataLocation));
+
+    Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("metadata loaded from storage has been modified");
+  }
+
+  @Test
+  public void testRegisterTableOverwriteReadmitsProtectedMetadataRevision() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("metadata_integrity_register_overwrite");
+    TableIdentifier tableId = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    Table table =
+        catalog
+            .buildTable(tableId, SCHEMA)
+            .withProperty(TableProperties.FORMAT_VERSION, "3")
+            .withProperty(TableProperties.ENCRYPTION_TABLE_KEY, "key-1")
+            .create();
+    TableMetadata current = ((BaseTable) table).operations().current();
+    String metadataLocation = current.location() + "/metadata/register-readmission.metadata.json";
+    TableMetadata admitted =
+        TableMetadata.buildFrom(current)
+            .setProperties(
+                Map.of(
+                    TableProperties.ENCRYPTION_TABLE_KEY,
+                    "key-1",
+                    TableProperties.COMMIT_NUM_RETRIES,
+                    "1"))
+            .build();
+    TableMetadataParser.write(admitted, fileIO.newOutputFile(metadataLocation));
+
+    Assertions.assertThat(catalog.registerTable(tableId, metadataLocation, true)).isNotNull();
+    Assertions.assertThat(catalog.loadTable(tableId).properties())
+        .containsEntry(TableProperties.COMMIT_NUM_RETRIES, "1");
+
+    TableMetadata modified =
+        TableMetadata.buildFrom(admitted)
+            .setProperties(
+                Map.of(
+                    TableProperties.ENCRYPTION_TABLE_KEY,
+                    "key-1",
+                    TableProperties.COMMIT_NUM_RETRIES,
+                    "2"))
+            .build();
+    TableMetadataParser.overwrite(modified, fileIO.newOutputFile(metadataLocation));
+
+    Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("metadata loaded from storage has been modified");
   }
 
   @Test

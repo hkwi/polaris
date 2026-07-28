@@ -149,8 +149,7 @@ class TableMetadataIntegrityTest {
         TableMetadataIntegrity.metadataHash(metadata));
     trustedProperties.put(TableMetadataIntegrity.METADATA_HASH_VERSION_PROPERTY, "future-version");
 
-    assertThatThrownBy(
-            () -> TableMetadataIntegrity.validate(entity(trustedProperties), metadata))
+    assertThatThrownBy(() -> TableMetadataIntegrity.validate(entity(trustedProperties), metadata))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("catalog metadata digest version is unsupported");
   }
