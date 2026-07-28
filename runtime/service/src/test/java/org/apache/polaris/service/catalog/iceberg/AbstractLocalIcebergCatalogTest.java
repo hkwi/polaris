@@ -1015,6 +1015,39 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
   }
 
   @Test
+  public void testLoadRejectsModifiedEncryptedMetadata() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("encrypted_metadata_integrity");
+    TableIdentifier tableId = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    Table table =
+        catalog
+            .buildTable(tableId, SCHEMA)
+            .withProperty(TableProperties.FORMAT_VERSION, "3")
+            .withProperty(TableProperties.ENCRYPTION_TABLE_KEY, "key-1")
+            .create();
+    TableMetadata current = ((BaseTable) table).operations().current();
+    TableMetadata modified =
+        TableMetadata.buildFrom(current)
+            .setProperties(
+                Map.of(
+                    TableProperties.ENCRYPTION_TABLE_KEY,
+                    "key-1",
+                    TableProperties.COMMIT_NUM_RETRIES,
+                    "1"))
+            .build();
+    fileIO.addFile(
+        current.metadataFileLocation(), TableMetadataParser.toJson(modified).getBytes(UTF_8));
+
+    Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("metadata loaded from storage has been modified");
+  }
+
+  @Test
   public void testValidateNotificationWhenTableAndNamespacesDontExist() {
     Assumptions.assumeTrue(
         requiresNamespaceCreate(),

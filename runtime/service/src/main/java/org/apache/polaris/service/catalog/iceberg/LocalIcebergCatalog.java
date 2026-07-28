@@ -478,6 +478,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
         .containsKey(TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY)) {
       TableMetadataTransitionValidator.pin(storedProperties, metadata);
     }
+    TableMetadataIntegrity.pin(storedProperties, metadata);
     IcebergTableLikeEntity updatedEntity =
         new IcebergTableLikeEntity.Builder(existingEntity)
             .setInternalProperties(storedProperties)
@@ -1848,8 +1849,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                       new HashMap<>(tableDefaultProperties),
                       Set.of(PolarisStorageActions.READ, PolarisStorageActions.LIST));
               TableMetadata metadata = TableMetadataParser.read(fileIO, metadataLocation);
-              TableMetadataTransitionValidator.validateLoaded(
-                  currentEntity.getInternalPropertiesAsMap(), metadata);
+              TableMetadataIntegrity.validate(currentEntity, metadata);
               return metadata;
             });
         if (polarisEventDispatcher.hasListeners(PolarisEventType.AFTER_REFRESH_TABLE)) {
@@ -1991,6 +1991,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                 .containsKey(TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY)) {
           TableMetadataTransitionValidator.pin(storedProperties, metadata);
         }
+        TableMetadataIntegrity.pin(storedProperties, metadata);
         String existingLocation;
         if (null == entity) {
           existingLocation = null;
@@ -3123,6 +3124,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
               TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY)) {
         TableMetadataTransitionValidator.pin(internalProperties, tableMetadata);
       }
+      TableMetadataIntegrity.pin(internalProperties, tableMetadata);
       entity =
           new IcebergTableLikeEntity.Builder(entity)
               .setInternalProperties(internalProperties)
