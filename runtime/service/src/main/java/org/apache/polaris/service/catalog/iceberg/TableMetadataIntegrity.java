@@ -35,8 +35,7 @@ import org.apache.polaris.core.entity.table.IcebergTableLikeEntity;
 /** Maintains the trusted metadata digest for encrypted Iceberg tables. */
 public final class TableMetadataIntegrity {
   static final String METADATA_HASH_PROPERTY = "polaris.encryption.metadata-hash";
-  static final String METADATA_HASH_VERSION_PROPERTY =
-      "polaris.encryption.metadata-hash-version";
+  static final String METADATA_HASH_VERSION_PROPERTY = "polaris.encryption.metadata-hash-version";
   static final String METADATA_HASH_VERSION = "iceberg-canonical-json-sha256-v1";
 
   private TableMetadataIntegrity() {}
@@ -75,8 +74,7 @@ public final class TableMetadataIntegrity {
 
     TableMetadataTransitionValidator.validateLoaded(trustedProperties, metadata);
 
-    String trustedKeyId =
-        trustedProperties.get(TableMetadataTransitionValidator.KEY_ID_PROPERTY);
+    String trustedKeyId = trustedProperties.get(TableMetadataTransitionValidator.KEY_ID_PROPERTY);
     String expectedHash = trustedProperties.get(METADATA_HASH_PROPERTY);
     String hashVersion = trustedProperties.get(METADATA_HASH_VERSION_PROPERTY);
     if (trustedKeyId == null) {
