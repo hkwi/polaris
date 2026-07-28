@@ -83,6 +83,35 @@ class TableMetadataTransitionValidatorTest {
         .hasMessage("Cannot add, change, or remove encryption key ID after table creation");
   }
 
+  @ParameterizedTest
+  @MethodSource("changedKeyIds")
+  void rejectsLoadedMetadataWithChangedPinnedKeyId(
+      String pinnedKeyId, Map<String, String> loadedProperties) {
+    assertThatThrownBy(
+            () ->
+                TableMetadataTransitionValidator.validateLoaded(
+                    pinned(pinnedKeyId), metadata(loadedProperties)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage(
+            "Iceberg table metadata encryption key ID does not match trusted catalog state");
+  }
+
+  @Test
+  void allowsLoadedMetadataWithPinnedMissingKeyId() {
+    assertThatCode(
+            () -> TableMetadataTransitionValidator.validateLoaded(pinned(null), metadata(Map.of())))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void leavesLoadedLegacyMetadataOutsideInvariant() {
+    assertThatCode(
+            () ->
+                TableMetadataTransitionValidator.validateLoaded(
+                    Map.of(), metadata(Map.of(KEY_ID, "key-1"))))
+        .doesNotThrowAnyException();
+  }
+
   private static Stream<Arguments> changedKeyIds() {
     return Stream.of(
         Arguments.of(null, Map.of(KEY_ID, "key-1")),

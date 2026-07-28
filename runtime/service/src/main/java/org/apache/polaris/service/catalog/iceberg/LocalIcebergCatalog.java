@@ -1812,7 +1812,8 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
         }
       }
 
-      String latestLocation = entity != null ? entity.getMetadataLocation() : null;
+      IcebergTableLikeEntity currentEntity = entity;
+      String latestLocation = currentEntity != null ? currentEntity.getMetadataLocation() : null;
       LOGGER.debug("Refreshing latestLocation: {}", latestLocation);
       if (latestLocation == null) {
         disableRefresh();
@@ -1843,7 +1844,10 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                       resolvedEntities,
                       new HashMap<>(tableDefaultProperties),
                       Set.of(PolarisStorageActions.READ, PolarisStorageActions.LIST));
-              return TableMetadataParser.read(fileIO, metadataLocation);
+              TableMetadata metadata = TableMetadataParser.read(fileIO, metadataLocation);
+              TableMetadataTransitionValidator.validateLoaded(
+                  currentEntity.getPropertiesAsMap(), metadata);
+              return metadata;
             });
         if (polarisEventDispatcher.hasListeners(PolarisEventType.AFTER_REFRESH_TABLE)) {
           polarisEventDispatcher.dispatch(
@@ -3109,10 +3113,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
       }
       Map<String, String> entityProperties = new HashMap<>(entity.getPropertiesAsMap());
       TableMetadataTransitionValidator.pin(entityProperties, tableMetadata);
-      entity =
-          new IcebergTableLikeEntity.Builder(entity)
-              .setProperties(entityProperties)
-              .build();
+      entity = new IcebergTableLikeEntity.Builder(entity).setProperties(entityProperties).build();
 
       // TODO: These might fail due to concurrent update; we need to do a retry in those cases.
       if (null == existingLocation) {

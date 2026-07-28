@@ -34,11 +34,26 @@ final class TableMetadataTransitionValidator {
       throw new CommitFailedException(
           "Cannot update table because encryption key ID is not pinned in catalog state");
     }
-    String expectedKeyId = trustedProperties.get(TableProperties.ENCRYPTION_TABLE_KEY);
-    String candidateKeyId = candidate.properties().get(TableProperties.ENCRYPTION_TABLE_KEY);
-    if (!Objects.equals(expectedKeyId, candidateKeyId)) {
+    if (!keyIdMatches(trustedProperties, candidate)) {
       throw new CommitFailedException(
           "Cannot add, change, or remove encryption key ID after table creation");
+    }
+  }
+
+  /**
+   * Verifies metadata loaded from storage against the trusted catalog pin before it is used.
+   *
+   * <p>Legacy entities without a pin remain outside the invariant. For pinned entities, a missing
+   * key ID is a value in its own right and must continue to be missing.
+   */
+  static void validateLoaded(
+      Map<String, String> trustedProperties, TableMetadata metadataFromStorage) {
+    if (!trustedProperties.containsKey(KEY_ID_PINNED_PROPERTY)) {
+      return;
+    }
+    if (!keyIdMatches(trustedProperties, metadataFromStorage)) {
+      throw new IllegalStateException(
+          "Iceberg table metadata encryption key ID does not match trusted catalog state");
     }
   }
 
@@ -50,5 +65,12 @@ final class TableMetadataTransitionValidator {
     } else {
       trustedProperties.put(TableProperties.ENCRYPTION_TABLE_KEY, keyId);
     }
+  }
+
+  private static boolean keyIdMatches(
+      Map<String, String> trustedProperties, TableMetadata candidate) {
+    String expectedKeyId = trustedProperties.get(TableProperties.ENCRYPTION_TABLE_KEY);
+    String candidateKeyId = candidate.properties().get(TableProperties.ENCRYPTION_TABLE_KEY);
+    return Objects.equals(expectedKeyId, candidateKeyId);
   }
 }

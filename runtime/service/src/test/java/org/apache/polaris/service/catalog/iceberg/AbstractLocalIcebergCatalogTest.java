@@ -963,6 +963,34 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
   }
 
   @Test
+  public void testLoadRejectsEncryptionKeyIdAddedToPinnedPlaintextMetadata() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("immutable_key_load");
+    TableIdentifier tableId = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    Table table =
+        catalog
+            .buildTable(tableId, SCHEMA)
+            .withProperty(TableProperties.FORMAT_VERSION, "3")
+            .create();
+    TableMetadata current = ((BaseTable) table).operations().current();
+    TableMetadata modified =
+        TableMetadata.buildFrom(current)
+            .setProperties(Map.of(TableProperties.ENCRYPTION_TABLE_KEY, "key-1"))
+            .build();
+    fileIO.addFile(
+        current.metadataFileLocation(), TableMetadataParser.toJson(modified).getBytes(UTF_8));
+
+    Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage(
+            "Iceberg table metadata encryption key ID does not match trusted catalog state");
+  }
+
+  @Test
   public void testValidateNotificationWhenTableAndNamespacesDontExist() {
     Assumptions.assumeTrue(
         requiresNamespaceCreate(),
