@@ -39,21 +39,18 @@ class TableMetadataTransitionValidatorTest {
   private static final String KEY_ID = TableProperties.ENCRYPTION_TABLE_KEY;
 
   @Test
-  void rejectsUnpinnedTableWithKeyId() {
-    assertThatThrownBy(
+  void allowsLegacyTableWithKeyIdToRemainOutsideInvariant() {
+    assertThatCode(
             () ->
                 TableMetadataTransitionValidator.validate(
                     Map.of(), metadata(Map.of(KEY_ID, "key-1"))))
-        .isInstanceOf(CommitFailedException.class)
-        .hasMessage("Cannot update table because encryption key ID is not pinned in catalog state");
+        .doesNotThrowAnyException();
   }
 
   @Test
-  void rejectsUnpinnedTableWithoutKeyId() {
-    assertThatThrownBy(
-            () -> TableMetadataTransitionValidator.validate(Map.of(), metadata(Map.of())))
-        .isInstanceOf(CommitFailedException.class)
-        .hasMessage("Cannot update table because encryption key ID is not pinned in catalog state");
+  void allowsLegacyTableWithoutKeyIdToRemainOutsideInvariant() {
+    assertThatCode(() -> TableMetadataTransitionValidator.validate(Map.of(), metadata(Map.of())))
+        .doesNotThrowAnyException();
   }
 
   @Test

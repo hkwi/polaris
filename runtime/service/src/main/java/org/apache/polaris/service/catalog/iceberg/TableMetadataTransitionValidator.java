@@ -31,8 +31,10 @@ final class TableMetadataTransitionValidator {
 
   static void validate(Map<String, String> trustedProperties, TableMetadata candidate) {
     if (!trustedProperties.containsKey(KEY_ID_PINNED_PROPERTY)) {
-      throw new CommitFailedException(
-          "Cannot update table because encryption key ID is not pinned in catalog state");
+      // Legacy tables remain outside the invariant until an explicit trusted attestation
+      // mechanism enrolls them. Ordinary legacy operations must not establish trust from
+      // metadata that may have been read from unprotected storage.
+      return;
     }
     if (!keyIdMatches(trustedProperties, candidate)) {
       throw new CommitFailedException(
