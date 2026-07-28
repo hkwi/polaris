@@ -95,6 +95,7 @@ import org.apache.iceberg.exceptions.ForbiddenException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.exceptions.ServiceFailureException;
+import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
@@ -950,13 +951,36 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
             .withProperty(TableProperties.ENCRYPTION_TABLE_KEY, "key-1")
             .create();
 
+    EntityResult namespaceResult =
+        metaStoreManager.readEntityByName(
+            polarisContext,
+            List.of(catalogEntity),
+            PolarisEntityType.NAMESPACE,
+            PolarisEntitySubType.NULL_SUBTYPE,
+            namespace.toString());
+    EntityResult tableResult =
+        metaStoreManager.readEntityByName(
+            polarisContext,
+            List.of(catalogEntity, namespaceResult.getEntity()),
+            PolarisEntityType.TABLE_LIKE,
+            PolarisEntitySubType.ICEBERG_TABLE,
+            tableId.name());
+    IcebergTableLikeEntity entity = IcebergTableLikeEntity.of(tableResult.getEntity());
+    Assertions.assertThat(entity.getInternalPropertiesAsMap())
+        .containsEntry(TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY, "true")
+        .containsEntry(TableMetadataTransitionValidator.KEY_ID_PROPERTY, "key-1");
+    Assertions.assertThat(entity.getPropertiesAsMap())
+        .doesNotContainKeys(
+            TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY,
+            TableMetadataTransitionValidator.KEY_ID_PROPERTY);
+
     Assertions.assertThatThrownBy(
             () ->
                 table
                     .updateProperties()
                     .set(TableProperties.ENCRYPTION_TABLE_KEY, "key-2")
                     .commit())
-        .isInstanceOf(CommitFailedException.class)
+        .isInstanceOf(ValidationException.class)
         .hasMessage("Cannot add, change, or remove encryption key ID after table creation");
     Assertions.assertThat(catalog.loadTable(tableId).properties())
         .containsEntry(TableProperties.ENCRYPTION_TABLE_KEY, "key-1");
@@ -1706,7 +1730,7 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     request.setPayload(update);
 
     Assertions.assertThatThrownBy(() -> catalog.sendNotification(tableId, request))
-        .isInstanceOf(CommitFailedException.class)
+        .isInstanceOf(ValidationException.class)
         .hasMessage("Cannot add, change, or remove encryption key ID after table creation");
     Assertions.assertThat(catalog.loadTable(tableId).properties())
         .containsEntry(TableProperties.ENCRYPTION_TABLE_KEY, "key-1");
@@ -2526,7 +2550,7 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     TableMetadataParser.write(candidate, fileIO.newOutputFile(metadataLocation));
 
     Assertions.assertThatThrownBy(() -> catalog.registerTable(tableId, metadataLocation, true))
-        .isInstanceOf(CommitFailedException.class)
+        .isInstanceOf(ValidationException.class)
         .hasMessage("Cannot add, change, or remove encryption key ID after table creation");
     Assertions.assertThat(catalog.loadTable(tableId).properties())
         .containsEntry(TableProperties.ENCRYPTION_TABLE_KEY, "key-1");

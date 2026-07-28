@@ -469,9 +469,15 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
     }
 
     IcebergTableLikeEntity existingEntity = IcebergTableLikeEntity.of(rawEntity);
-    TableMetadataTransitionValidator.validate(existingEntity.getPropertiesAsMap(), metadata);
+    TableMetadataTransitionValidator.validate(
+        existingEntity.getInternalPropertiesAsMap(), metadata);
 
     Map<String, String> storedProperties = buildTableMetadataPropertiesMap(metadata);
+    if (existingEntity
+        .getInternalPropertiesAsMap()
+        .containsKey(TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY)) {
+      TableMetadataTransitionValidator.pin(storedProperties, metadata);
+    }
     IcebergTableLikeEntity updatedEntity =
         new IcebergTableLikeEntity.Builder(existingEntity)
             .setInternalProperties(storedProperties)
@@ -1843,7 +1849,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                       Set.of(PolarisStorageActions.READ, PolarisStorageActions.LIST));
               TableMetadata metadata = TableMetadataParser.read(fileIO, metadataLocation);
               TableMetadataTransitionValidator.validateLoaded(
-                  currentEntity.getPropertiesAsMap(), metadata);
+                  currentEntity.getInternalPropertiesAsMap(), metadata);
               return metadata;
             });
         if (polarisEventDispatcher.hasListeners(PolarisEventType.AFTER_REFRESH_TABLE)) {
@@ -1976,14 +1982,15 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
                 resolvedPath == null ? null : resolvedPath.getRawLeafEntity());
         if (base != null) {
           TableMetadataTransitionValidator.validate(
-              entity == null ? Map.of() : entity.getPropertiesAsMap(), metadata);
-        }
-        Map<String, String> entityProperties =
-            new HashMap<>(entity == null ? Map.of() : entity.getPropertiesAsMap());
-        if (entity == null) {
-          TableMetadataTransitionValidator.pin(entityProperties, metadata);
+              entity == null ? Map.of() : entity.getInternalPropertiesAsMap(), metadata);
         }
         Map<String, String> storedProperties = buildTableMetadataPropertiesMap(metadata);
+        if (entity == null
+            || entity
+                .getInternalPropertiesAsMap()
+                .containsKey(TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY)) {
+          TableMetadataTransitionValidator.pin(storedProperties, metadata);
+        }
         String existingLocation;
         if (null == entity) {
           existingLocation = null;
@@ -1993,7 +2000,7 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
               new IcebergTableLikeEntity.Builder(
                       PolarisEntitySubType.ICEBERG_TABLE,
                       tableIdentifier,
-                      entityProperties,
+                      Map.of(),
                       internalProperties,
                       newLocation)
                   .setCatalogId(getCatalogId())
@@ -2007,7 +2014,6 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
               idempotencyInternalProperties(storedProperties, entity);
           entity =
               new IcebergTableLikeEntity.Builder(entity)
-                  .setProperties(entityProperties)
                   .setInternalProperties(internalProperties)
                   .setBaseLocation(metadata.location())
                   .setMetadataLocation(newLocation)
@@ -3108,13 +3114,19 @@ public class LocalIcebergCatalog extends BaseMetastoreViewCatalog
       validateMetadataFileInTableDir(tableIdentifier, tableMetadata);
 
       if (existingLocation != null) {
-        TableMetadataTransitionValidator.validate(entity.getPropertiesAsMap(), tableMetadata);
+        TableMetadataTransitionValidator.validate(
+            entity.getInternalPropertiesAsMap(), tableMetadata);
       }
-      Map<String, String> entityProperties = new HashMap<>(entity.getPropertiesAsMap());
-      if (existingLocation == null) {
-        TableMetadataTransitionValidator.pin(entityProperties, tableMetadata);
+      Map<String, String> internalProperties = new HashMap<>(entity.getInternalPropertiesAsMap());
+      if (existingLocation == null
+          || internalProperties.containsKey(
+              TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY)) {
+        TableMetadataTransitionValidator.pin(internalProperties, tableMetadata);
       }
-      entity = new IcebergTableLikeEntity.Builder(entity).setProperties(entityProperties).build();
+      entity =
+          new IcebergTableLikeEntity.Builder(entity)
+              .setInternalProperties(internalProperties)
+              .build();
 
       // TODO: These might fail due to concurrent update; we need to do a retry in those cases.
       if (null == existingLocation) {

@@ -29,7 +29,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableProperties;
-import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.ValidationException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -76,7 +76,7 @@ class TableMetadataTransitionValidatorTest {
             () ->
                 TableMetadataTransitionValidator.validate(
                     pinned(pinnedKeyId), metadata(newProperties)))
-        .isInstanceOf(CommitFailedException.class)
+        .isInstanceOf(ValidationException.class)
         .hasMessage("Cannot add, change, or remove encryption key ID after table creation");
   }
 
@@ -124,25 +124,27 @@ class TableMetadataTransitionValidatorTest {
 
     assertThat(trustedProperties)
         .containsEntry(TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY, "true")
-        .containsEntry(KEY_ID, "key-1");
+        .containsEntry(TableMetadataTransitionValidator.KEY_ID_PROPERTY, "key-1")
+        .doesNotContainKey(KEY_ID);
   }
 
   @Test
   void pinsMissingKeyId() {
-    Map<String, String> trustedProperties = new HashMap<>(Map.of(KEY_ID, "old-key"));
+    Map<String, String> trustedProperties =
+        new HashMap<>(Map.of(TableMetadataTransitionValidator.KEY_ID_PROPERTY, "old-key"));
 
     TableMetadataTransitionValidator.pin(trustedProperties, metadata(Map.of()));
 
     assertThat(trustedProperties)
         .containsEntry(TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY, "true")
-        .doesNotContainKey(KEY_ID);
+        .doesNotContainKey(TableMetadataTransitionValidator.KEY_ID_PROPERTY);
   }
 
   private static Map<String, String> pinned(String keyId) {
     Map<String, String> properties = new HashMap<>();
     properties.put(TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY, "true");
     if (keyId != null) {
-      properties.put(KEY_ID, keyId);
+      properties.put(TableMetadataTransitionValidator.KEY_ID_PROPERTY, keyId);
     }
     return properties;
   }

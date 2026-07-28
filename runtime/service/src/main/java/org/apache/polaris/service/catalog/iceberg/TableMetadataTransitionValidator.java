@@ -22,10 +22,11 @@ import java.util.Map;
 import java.util.Objects;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableProperties;
-import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.ValidationException;
 
 final class TableMetadataTransitionValidator {
   static final String KEY_ID_PINNED_PROPERTY = "polaris.encryption.key-id-pinned";
+  static final String KEY_ID_PROPERTY = "polaris.encryption.key-id";
 
   private TableMetadataTransitionValidator() {}
 
@@ -37,7 +38,7 @@ final class TableMetadataTransitionValidator {
       return;
     }
     if (!keyIdMatches(trustedProperties, candidate)) {
-      throw new CommitFailedException(
+      throw new ValidationException(
           "Cannot add, change, or remove encryption key ID after table creation");
     }
   }
@@ -63,15 +64,15 @@ final class TableMetadataTransitionValidator {
     trustedProperties.put(KEY_ID_PINNED_PROPERTY, Boolean.TRUE.toString());
     String keyId = metadata.properties().get(TableProperties.ENCRYPTION_TABLE_KEY);
     if (keyId == null) {
-      trustedProperties.remove(TableProperties.ENCRYPTION_TABLE_KEY);
+      trustedProperties.remove(KEY_ID_PROPERTY);
     } else {
-      trustedProperties.put(TableProperties.ENCRYPTION_TABLE_KEY, keyId);
+      trustedProperties.put(KEY_ID_PROPERTY, keyId);
     }
   }
 
   private static boolean keyIdMatches(
       Map<String, String> trustedProperties, TableMetadata candidate) {
-    String expectedKeyId = trustedProperties.get(TableProperties.ENCRYPTION_TABLE_KEY);
+    String expectedKeyId = trustedProperties.get(KEY_ID_PROPERTY);
     String candidateKeyId = candidate.properties().get(TableProperties.ENCRYPTION_TABLE_KEY);
     return Objects.equals(expectedKeyId, candidateKeyId);
   }
