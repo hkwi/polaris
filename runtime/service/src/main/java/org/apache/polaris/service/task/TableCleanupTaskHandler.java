@@ -46,6 +46,7 @@ import org.apache.polaris.core.entity.table.IcebergTableLikeEntity;
 import org.apache.polaris.core.persistence.MetaStoreManagerFactory;
 import org.apache.polaris.core.persistence.PolarisMetaStoreManager;
 import org.apache.polaris.service.catalog.iceberg.TableMetadataIntegrity;
+import org.apache.polaris.service.catalog.iceberg.TableMetadataIntegrityException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -118,7 +119,12 @@ public class TableCleanupTaskHandler implements TaskHandler {
 
       TableMetadata tableMetadata =
           TableMetadataParser.read(fileIO, tableEntity.getMetadataLocation());
-      TableMetadataIntegrity.validate(tableEntity, tableMetadata);
+      try {
+        TableMetadataIntegrity.validate(tableEntity, tableMetadata);
+      } catch (TableMetadataIntegrityException e) {
+        throw new NonRetryableTaskException(
+            "Table cleanup stopped because metadata failed integrity validation", e);
+      }
 
       PolarisMetaStoreManager metaStoreManager =
           metaStoreManagerFactory.getOrCreateMetaStoreManager(callContext.getRealmContext());

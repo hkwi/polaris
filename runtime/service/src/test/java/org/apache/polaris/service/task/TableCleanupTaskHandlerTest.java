@@ -201,6 +201,9 @@ class TableCleanupTaskHandlerTest {
             .build();
 
     Assertions.assertThatThrownBy(() -> handler.handleTask(addTaskLocation(task), callContext))
+        .isInstanceOf(NonRetryableTaskException.class)
+        .hasMessage("Table cleanup stopped because metadata failed integrity validation")
+        .cause()
         .isInstanceOf(TableMetadataIntegrityException.class)
         .hasMessageContaining("metadata does not match the trusted catalog digest");
     assertThat(fileIO.newInputFile(metadataFile).exists()).isTrue();
@@ -244,6 +247,9 @@ class TableCleanupTaskHandlerTest {
             .build();
 
     Assertions.assertThatThrownBy(() -> handler.handleTask(addTaskLocation(task), callContext))
+        .isInstanceOf(NonRetryableTaskException.class)
+        .hasMessage("Table cleanup stopped because metadata failed integrity validation")
+        .cause()
         .isInstanceOf(TableMetadataIntegrityException.class)
         .hasMessage(
             "Iceberg table metadata encryption key ID does not match trusted catalog state");
