@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Objects;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.encryption.EncryptionUtil;
 import org.apache.iceberg.exceptions.ValidationException;
 
 final class TableMetadataTransitionValidator {
@@ -61,6 +62,7 @@ final class TableMetadataTransitionValidator {
   }
 
   static void pin(Map<String, String> trustedProperties, TableMetadata metadata) {
+    EncryptionUtil.checkCompatibility(metadata.properties(), metadata.formatVersion());
     trustedProperties.put(KEY_ID_PINNED_PROPERTY, Boolean.TRUE.toString());
     String keyId = metadata.properties().get(TableProperties.ENCRYPTION_TABLE_KEY);
     if (keyId == null) {

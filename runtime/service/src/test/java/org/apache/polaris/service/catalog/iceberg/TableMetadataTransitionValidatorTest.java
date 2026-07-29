@@ -140,6 +140,20 @@ class TableMetadataTransitionValidatorTest {
         .doesNotContainKey(TableMetadataTransitionValidator.KEY_ID_PROPERTY);
   }
 
+  @Test
+  void rejectsIncompatibleEncryptionPropertiesBeforePinning() {
+    Map<String, String> trustedProperties = new HashMap<>();
+
+    assertThatThrownBy(
+            () ->
+                TableMetadataTransitionValidator.pin(
+                    trustedProperties, metadata(2, Map.of(KEY_ID, "key-1"))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid properties for v2")
+        .hasMessageContaining(KEY_ID);
+    assertThat(trustedProperties).isEmpty();
+  }
+
   private static Map<String, String> pinned(String keyId) {
     Map<String, String> properties = new HashMap<>();
     properties.put(TableMetadataTransitionValidator.KEY_ID_PINNED_PROPERTY, "true");
@@ -150,7 +164,12 @@ class TableMetadataTransitionValidatorTest {
   }
 
   private static TableMetadata metadata(Map<String, String> properties) {
+    return metadata(3, properties);
+  }
+
+  private static TableMetadata metadata(int formatVersion, Map<String, String> properties) {
     TableMetadata metadata = mock(TableMetadata.class);
+    when(metadata.formatVersion()).thenReturn(formatVersion);
     when(metadata.properties()).thenReturn(properties);
     return metadata;
   }

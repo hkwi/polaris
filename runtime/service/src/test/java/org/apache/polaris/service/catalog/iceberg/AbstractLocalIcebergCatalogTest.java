@@ -2557,6 +2557,31 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
   }
 
   @Test
+  public void testRegisterTableRejectsEncryptionPropertiesInFormatV2Metadata() {
+    LocalIcebergCatalog catalog = catalog();
+    Namespace namespace = Namespace.of("incompatible_encryption_register");
+    TableIdentifier tableId = TableIdentifier.of(namespace, "table");
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(namespace);
+    }
+
+    String tableLocation = STORAGE_LOCATION + "/incompatible-encryption-register/table";
+    String metadataLocation = tableLocation + "/metadata/v1.metadata.json";
+    TableMetadata incompatibleMetadata =
+        TableMetadata.buildFrom(createSampleTableMetadata(tableLocation))
+            .setProperties(Map.of(TableProperties.ENCRYPTION_TABLE_KEY, "key-1"))
+            .build();
+    Assertions.assertThat(incompatibleMetadata.formatVersion()).isEqualTo(2);
+    TableMetadataParser.write(incompatibleMetadata, fileIO.newOutputFile(metadataLocation));
+
+    Assertions.assertThatThrownBy(() -> catalog.registerTable(tableId, metadataLocation))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid properties for v2")
+        .hasMessageContaining(TableProperties.ENCRYPTION_TABLE_KEY);
+    Assertions.assertThat(catalog.tableExists(tableId)).isFalse();
+  }
+
+  @Test
   public void testRegisterTableOverwriteUpdatesMetadataLocation() {
     LocalIcebergCatalog catalog = catalog();
     Namespace namespace = Namespace.of("register_overwrite_update");
