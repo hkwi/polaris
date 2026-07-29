@@ -22,14 +22,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.nio.ByteBuffer;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.GenericStatisticsFile;
+import org.apache.iceberg.ImmutableGenericPartitionStatisticsFile;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.SnapshotParser;
+import org.apache.iceberg.SnapshotRef;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.encryption.BaseEncryptedKey;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
 import org.apache.iceberg.types.Types;
 import org.apache.polaris.core.entity.PolarisEntitySubType;
@@ -165,16 +173,133 @@ class TableMetadataIntegrityTest {
   }
 
   @Test
-  void canonicalHashIsStableAcrossMetadataFileRoundTrip() {
-    TableMetadata metadata = metadata(Map.of(TableProperties.ENCRYPTION_TABLE_KEY, KEY_ID));
+  void canonicalHashIsStableAcrossRealisticMetadataFileRoundTrip() {
+    TableMetadata metadata = realisticEncryptedMetadata();
     InMemoryFileIO fileIO = new InMemoryFileIO();
     String location = "file:/tmp/table/metadata/v1.metadata.json";
+
+    assertThat(metadata.snapshots()).hasSize(2);
+    assertThat(metadata.snapshotLog()).hasSize(2);
+    assertThat(metadata.previousFiles()).hasSize(2);
+    assertThat(metadata.statisticsFiles()).hasSize(1);
+    assertThat(metadata.partitionStatisticsFiles()).hasSize(1);
+    assertThat(metadata.encryptionKeys()).hasSize(2);
+    assertThat(metadata.nextRowId()).isEqualTo(15L);
 
     TableMetadataParser.write(metadata, fileIO.newOutputFile(location));
     TableMetadata parsed = TableMetadataParser.read(fileIO, location);
 
     assertThat(TableMetadataIntegrity.metadataHash(parsed))
         .isEqualTo(TableMetadataIntegrity.metadataHash(metadata));
+  }
+
+  @Test
+  void rejectsModifiedEncryptionKeys() {
+    TableMetadata metadata = realisticEncryptedMetadata();
+    Map<String, String> trustedProperties = pinnedProperties(KEY_ID);
+    TableMetadataIntegrity.pin(trustedProperties, metadata);
+
+    TableMetadata modified =
+        TableMetadata.buildFrom(metadata)
+            .addEncryptionKey(
+                new BaseEncryptedKey(
+                    "data-key-3",
+                    ByteBuffer.wrap(new byte[] {7, 8, 9}),
+                    KEY_ID,
+                    Map.of("algorithm", "AES-GCM")))
+            .build();
+
+    assertThatThrownBy(() -> TableMetadataIntegrity.validate(entity(trustedProperties), modified))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("metadata loaded from storage has been modified");
+  }
+
+  private static TableMetadata realisticEncryptedMetadata() {
+    TableMetadata base =
+        metadata(
+            Map.of(
+                TableProperties.ENCRYPTION_TABLE_KEY,
+                KEY_ID,
+                TableProperties.METADATA_PREVIOUS_VERSIONS_MAX,
+                "10"));
+
+    TableMetadata withFirstMetadataLogEntry =
+        TableMetadata.buildFrom(base)
+            .setPreviousFileLocation("file:/tmp/table/metadata/v0.metadata.json")
+            .setProperties(Map.of("test.revision", "1"))
+            .build();
+
+    Snapshot firstSnapshot =
+        SnapshotParser.fromJson(
+            """
+            {
+              "sequence-number": 1,
+              "snapshot-id": 101,
+              "timestamp-ms": 1000,
+              "summary": {
+                "operation": "append",
+                "added-data-files": "1"
+              },
+              "manifest-list": "file:/tmp/table/metadata/snap-101.avro",
+              "schema-id": 0,
+              "first-row-id": 0,
+              "added-rows": 10,
+              "key-id": "data-key-1"
+            }
+            """);
+
+    Snapshot secondSnapshot =
+        SnapshotParser.fromJson(
+            """
+            {
+              "sequence-number": 2,
+              "snapshot-id": 102,
+              "parent-snapshot-id": 101,
+              "timestamp-ms": 2000,
+              "summary": {
+                "operation": "append",
+                "added-data-files": "1"
+              },
+              "manifest-list": "file:/tmp/table/metadata/snap-102.avro",
+              "schema-id": 0,
+              "first-row-id": 10,
+              "added-rows": 5,
+              "key-id": "data-key-2"
+            }
+            """);
+
+    TableMetadata withFirstSnapshot =
+        TableMetadataParser.fromJson(
+            TableMetadataParser.toJson(
+                TableMetadata.buildFrom(withFirstMetadataLogEntry)
+                    .setBranchSnapshot(firstSnapshot, SnapshotRef.MAIN_BRANCH)
+                    .build()));
+
+    return TableMetadata.buildFrom(withFirstSnapshot)
+        .setPreviousFileLocation("file:/tmp/table/metadata/v1.metadata.json")
+        .setBranchSnapshot(secondSnapshot, SnapshotRef.MAIN_BRANCH)
+        .setStatistics(
+            new GenericStatisticsFile(
+                102L, "file:/tmp/table/metadata/stats-102.puffin", 128L, 1L, List.of()))
+        .setPartitionStatistics(
+            ImmutableGenericPartitionStatisticsFile.builder()
+                .snapshotId(102L)
+                .path("file:/tmp/table/metadata/partition-stats-102.parquet")
+                .fileSizeInBytes(256L)
+                .build())
+        .addEncryptionKey(
+            new BaseEncryptedKey(
+                "data-key-1",
+                ByteBuffer.wrap(new byte[] {1, 2, 3}),
+                KEY_ID,
+                Map.of("algorithm", "AES-GCM")))
+        .addEncryptionKey(
+            new BaseEncryptedKey(
+                "data-key-2",
+                ByteBuffer.wrap(new byte[] {4, 5, 6}),
+                KEY_ID,
+                Map.of("algorithm", "AES-GCM")))
+        .build();
   }
 
   private static Map<String, String> pinnedProperties(String keyId) {
