@@ -90,7 +90,8 @@ class TableMetadataTransitionValidatorTest {
                     pinned(pinnedKeyId), metadata(loadedProperties)))
         .isInstanceOf(IllegalStateException.class)
         .hasMessage(
-            "Iceberg table metadata encryption key ID does not match trusted catalog state");
+            "Iceberg table metadata integrity check failed for test.metadata.json: encryption key "
+                + "ID does not match trusted catalog state");
   }
 
   @Test
@@ -170,6 +171,7 @@ class TableMetadataTransitionValidatorTest {
   private static TableMetadata metadata(int formatVersion, Map<String, String> properties) {
     TableMetadata metadata = mock(TableMetadata.class);
     when(metadata.formatVersion()).thenReturn(formatVersion);
+    when(metadata.metadataFileLocation()).thenReturn("test.metadata.json");
     when(metadata.properties()).thenReturn(properties);
     return metadata;
   }

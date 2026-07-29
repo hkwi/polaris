@@ -1010,8 +1010,8 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
 
     Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
         .isInstanceOf(IllegalStateException.class)
-        .hasMessage(
-            "Iceberg table metadata encryption key ID does not match trusted catalog state");
+        .hasMessageContaining("Iceberg table metadata integrity check failed for")
+        .hasMessageContaining(": encryption key ID does not match trusted catalog state");
   }
 
   @Test
