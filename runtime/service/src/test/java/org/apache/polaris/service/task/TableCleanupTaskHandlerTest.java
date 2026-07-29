@@ -251,8 +251,8 @@ class TableCleanupTaskHandlerTest {
         .hasMessage("Table cleanup stopped because metadata failed integrity validation")
         .cause()
         .isInstanceOf(TableMetadataIntegrityException.class)
-        .hasMessage(
-            "Iceberg table metadata encryption key ID does not match trusted catalog state");
+        .hasMessageContaining("Iceberg table metadata integrity check failed for")
+        .hasMessageContaining(": encryption key ID does not match trusted catalog state");
     assertThat(fileIO.newInputFile(metadataFile).exists()).isTrue();
   }
 

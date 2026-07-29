@@ -79,22 +79,23 @@ public final class TableMetadataIntegrity {
     String hashVersion = trustedProperties.get(METADATA_HASH_VERSION_PROPERTY);
     if (trustedKeyId == null) {
       if (expectedHash != null || hashVersion != null) {
-        throw integrityFailure(metadata, "catalog state is inconsistent");
+        throw integrityFailure(metadata, "trusted catalog state is inconsistent");
       }
       return;
     }
     if (expectedHash == null) {
-      throw integrityFailure(metadata, "catalog state has no metadata digest");
+      throw integrityFailure(metadata, "trusted catalog state has no metadata digest");
     }
     if (!METADATA_HASH_VERSION.equals(hashVersion)) {
-      throw integrityFailure(metadata, "catalog metadata digest version is unsupported");
+      throw integrityFailure(
+          metadata, "trusted catalog state has an unsupported metadata digest version");
     }
 
     byte[] expected;
     try {
       expected = Base64.getDecoder().decode(expectedHash);
     } catch (IllegalArgumentException e) {
-      throw integrityFailure(metadata, "catalog metadata digest is invalid", e);
+      throw integrityFailure(metadata, "trusted catalog state has an invalid metadata digest", e);
     }
 
     if (!MessageDigest.isEqual(expected, metadataHashBytes(metadata))) {

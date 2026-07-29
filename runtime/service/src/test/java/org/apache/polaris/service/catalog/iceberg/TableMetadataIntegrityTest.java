@@ -103,8 +103,8 @@ class TableMetadataIntegrityTest {
 
     assertThatThrownBy(() -> TableMetadataIntegrity.validate(entity(trustedProperties), modified))
         .isInstanceOf(TableMetadataIntegrityException.class)
-        .hasMessage(
-            "Iceberg table metadata encryption key ID does not match trusted catalog state");
+        .hasMessageContaining("Iceberg table metadata integrity check failed for")
+        .hasMessageContaining(": encryption key ID does not match trusted catalog state");
   }
 
   @Test
@@ -135,7 +135,7 @@ class TableMetadataIntegrityTest {
                     entity(missingDigest),
                     metadata(Map.of(TableProperties.ENCRYPTION_TABLE_KEY, KEY_ID))))
         .isInstanceOf(TableMetadataIntegrityException.class)
-        .hasMessageContaining("catalog state has no metadata digest");
+        .hasMessageContaining("trusted catalog state has no metadata digest");
 
     Map<String, String> invalidDigest = pinnedProperties(KEY_ID);
     invalidDigest.put(TableMetadataIntegrity.METADATA_HASH_PROPERTY, "not-base64!");
@@ -148,7 +148,7 @@ class TableMetadataIntegrityTest {
                     entity(invalidDigest),
                     metadata(Map.of(TableProperties.ENCRYPTION_TABLE_KEY, KEY_ID))))
         .isInstanceOf(TableMetadataIntegrityException.class)
-        .hasMessageContaining("catalog metadata digest is invalid");
+        .hasMessageContaining("trusted catalog state has an invalid metadata digest");
   }
 
   @Test
@@ -162,7 +162,7 @@ class TableMetadataIntegrityTest {
 
     assertThatThrownBy(() -> TableMetadataIntegrity.validate(entity(trustedProperties), metadata))
         .isInstanceOf(TableMetadataIntegrityException.class)
-        .hasMessageContaining("catalog metadata digest version is unsupported");
+        .hasMessageContaining("trusted catalog state has an unsupported metadata digest version");
   }
 
   @Test
