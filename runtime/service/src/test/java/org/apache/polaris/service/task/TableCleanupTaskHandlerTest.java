@@ -55,6 +55,7 @@ import org.apache.polaris.core.entity.table.IcebergTableLikeEntity;
 import org.apache.polaris.core.persistence.MetaStoreManagerFactory;
 import org.apache.polaris.core.persistence.PolarisMetaStoreManager;
 import org.apache.polaris.core.persistence.pagination.PageToken;
+import org.apache.polaris.service.catalog.iceberg.TableMetadataIntegrityException;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -200,8 +201,8 @@ class TableCleanupTaskHandlerTest {
             .build();
 
     Assertions.assertThatThrownBy(() -> handler.handleTask(addTaskLocation(task), callContext))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("metadata loaded from storage has been modified");
+        .isInstanceOf(TableMetadataIntegrityException.class)
+        .hasMessageContaining("metadata does not match the trusted catalog digest");
     assertThat(fileIO.newInputFile(metadataFile).exists()).isTrue();
   }
 
@@ -243,7 +244,7 @@ class TableCleanupTaskHandlerTest {
             .build();
 
     Assertions.assertThatThrownBy(() -> handler.handleTask(addTaskLocation(task), callContext))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(TableMetadataIntegrityException.class)
         .hasMessage(
             "Iceberg table metadata encryption key ID does not match trusted catalog state");
     assertThat(fileIO.newInputFile(metadataFile).exists()).isTrue();

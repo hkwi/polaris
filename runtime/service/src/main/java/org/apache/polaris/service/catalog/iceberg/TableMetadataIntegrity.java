@@ -98,7 +98,7 @@ public final class TableMetadataIntegrity {
     }
 
     if (!MessageDigest.isEqual(expected, metadataHashBytes(metadata))) {
-      throw integrityFailure(metadata, "metadata loaded from storage has been modified");
+      throw integrityFailure(metadata, "metadata does not match the trusted catalog digest");
     }
   }
 
@@ -117,11 +117,12 @@ public final class TableMetadataIntegrity {
     }
   }
 
-  private static IllegalStateException integrityFailure(TableMetadata metadata, String reason) {
+  private static TableMetadataIntegrityException integrityFailure(
+      TableMetadata metadata, String reason) {
     return integrityFailure(metadata, reason, null);
   }
 
-  private static IllegalStateException integrityFailure(
+  private static TableMetadataIntegrityException integrityFailure(
       TableMetadata metadata, String reason, Exception cause) {
     String message =
         "Iceberg table metadata integrity check failed for "
@@ -129,7 +130,7 @@ public final class TableMetadataIntegrity {
             + ": "
             + reason;
     return cause == null
-        ? new IllegalStateException(message)
-        : new IllegalStateException(message, cause);
+        ? new TableMetadataIntegrityException(message)
+        : new TableMetadataIntegrityException(message, cause);
   }
 }

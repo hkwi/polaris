@@ -22,7 +22,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -99,7 +102,7 @@ class TableMetadataIntegrityTest {
     TableMetadata modified = metadata(Map.of(TableProperties.ENCRYPTION_TABLE_KEY, "added-key"));
 
     assertThatThrownBy(() -> TableMetadataIntegrity.validate(entity(trustedProperties), modified))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(TableMetadataIntegrityException.class)
         .hasMessage(
             "Iceberg table metadata encryption key ID does not match trusted catalog state");
   }
@@ -118,8 +121,8 @@ class TableMetadataIntegrityTest {
                 "1"));
 
     assertThatThrownBy(() -> TableMetadataIntegrity.validate(entity(trustedProperties), modified))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("metadata loaded from storage has been modified");
+        .isInstanceOf(TableMetadataIntegrityException.class)
+        .hasMessageContaining("metadata does not match the trusted catalog digest");
   }
 
   @Test
@@ -131,7 +134,7 @@ class TableMetadataIntegrityTest {
                 TableMetadataIntegrity.validate(
                     entity(missingDigest),
                     metadata(Map.of(TableProperties.ENCRYPTION_TABLE_KEY, KEY_ID))))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(TableMetadataIntegrityException.class)
         .hasMessageContaining("catalog state has no metadata digest");
 
     Map<String, String> invalidDigest = pinnedProperties(KEY_ID);
@@ -144,7 +147,7 @@ class TableMetadataIntegrityTest {
                 TableMetadataIntegrity.validate(
                     entity(invalidDigest),
                     metadata(Map.of(TableProperties.ENCRYPTION_TABLE_KEY, KEY_ID))))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(TableMetadataIntegrityException.class)
         .hasMessageContaining("catalog metadata digest is invalid");
   }
 
@@ -158,7 +161,7 @@ class TableMetadataIntegrityTest {
     trustedProperties.put(TableMetadataIntegrity.METADATA_HASH_VERSION_PROPERTY, "future-version");
 
     assertThatThrownBy(() -> TableMetadataIntegrity.validate(entity(trustedProperties), metadata))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(TableMetadataIntegrityException.class)
         .hasMessageContaining("catalog metadata digest version is unsupported");
   }
 
@@ -210,8 +213,30 @@ class TableMetadataIntegrityTest {
             .build();
 
     assertThatThrownBy(() -> TableMetadataIntegrity.validate(entity(trustedProperties), modified))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("metadata loaded from storage has been modified");
+        .isInstanceOf(TableMetadataIntegrityException.class)
+        .hasMessageContaining("metadata does not match the trusted catalog digest");
+  }
+
+  @Test
+  void canonicalHashV1MatchesGoldenMetadata() throws IOException {
+    String resource = "/table-metadata-integrity-v1.json";
+    String json;
+    try (InputStream input = TableMetadataIntegrityTest.class.getResourceAsStream(resource)) {
+      assertThat(input).as(resource).isNotNull();
+      json = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+    }
+
+    TableMetadata metadata = TableMetadataParser.fromJson(json);
+
+    assertThat(metadata.schemas()).hasSize(2);
+    assertThat(metadata.specs()).hasSize(1);
+    assertThat(metadata.sortOrders()).hasSize(1);
+    assertThat(metadata.refs()).containsKeys("main", "audit");
+    assertThat(metadata.statisticsFiles().getFirst().blobMetadata()).hasSize(1);
+    assertThat(metadata.encryptionKeys()).hasSize(2);
+    // This pins the v1 contract across Iceberg upgrades. Do not regenerate it mechanically.
+    assertThat(TableMetadataIntegrity.metadataHash(metadata))
+        .isEqualTo("C0vt/i/y4k0B6anvnLNc+vHQSqgO4qcAxP1tCssbyAg=");
   }
 
   private static TableMetadata realisticEncryptedMetadata() {

@@ -1009,7 +1009,7 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
         current.metadataFileLocation(), TableMetadataParser.toJson(modified).getBytes(UTF_8));
 
     Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(TableMetadataIntegrityException.class)
         .hasMessageContaining("Iceberg table metadata integrity check failed for")
         .hasMessageContaining(": encryption key ID does not match trusted catalog state");
   }
@@ -1043,8 +1043,8 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
         current.metadataFileLocation(), TableMetadataParser.toJson(modified).getBytes(UTF_8));
 
     Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("metadata loaded from storage has been modified");
+        .isInstanceOf(TableMetadataIntegrityException.class)
+        .hasMessageContaining("metadata does not match the trusted catalog digest");
   }
 
   @Test
@@ -1809,8 +1809,8 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     TableMetadataParser.overwrite(modified, fileIO.newOutputFile(metadataLocation));
 
     Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("metadata loaded from storage has been modified");
+        .isInstanceOf(TableMetadataIntegrityException.class)
+        .hasMessageContaining("metadata does not match the trusted catalog digest");
   }
 
   @Test
@@ -2745,8 +2745,8 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     TableMetadataParser.overwrite(modified, fileIO.newOutputFile(metadataLocation));
 
     Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("metadata loaded from storage has been modified");
+        .isInstanceOf(TableMetadataIntegrityException.class)
+        .hasMessageContaining("metadata does not match the trusted catalog digest");
   }
 
   @Test
@@ -2793,8 +2793,8 @@ public abstract class AbstractLocalIcebergCatalogTest extends CatalogTests<Local
     TableMetadataParser.overwrite(modified, fileIO.newOutputFile(metadataLocation));
 
     Assertions.assertThatThrownBy(() -> catalog.loadTable(tableId))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("metadata loaded from storage has been modified");
+        .isInstanceOf(TableMetadataIntegrityException.class)
+        .hasMessageContaining("metadata does not match the trusted catalog digest");
   }
 
   @Test
